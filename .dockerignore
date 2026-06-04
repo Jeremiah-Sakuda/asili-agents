@@ -1,0 +1,45 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+.venv
+venv
+*.egg-info
+dist
+build
+
+# IDE
+.idea
+.vscode
+*.swp
+
+# Testing
+.pytest_cache
+.coverage
+htmlcov
+.tox
+.nox
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Misc
+*.log
+*.db
+tmp
+temp
+node_modules
+
+# Documentation
+docs
+*.md
+!README.md
+
+# Design files
+design_handoff_ops_console
