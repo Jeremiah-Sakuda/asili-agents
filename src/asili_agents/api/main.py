@@ -1,0 +1,382 @@
+"""FastAPI application for the Asili Operations Team.
+
+This API provides:
+1. Agent execution endpoints
+2. Conversation management
+3. Approval workflow
+4. Demo runner
+"""
+
+from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import Any
+from uuid import UUID
+
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+from asili_agents.config import get_settings
+from asili_agents.data.seed import seed_demo_data, get_demo_seller
+from asili_agents.data.models import (
+    Conversation,
+    Message,
+    MessageDirection,
+    ConversationStatus,
+)
+from asili_agents.tools.catalog import set_product_store
+from asili_agents.tools.pricing import set_pricing_context
+from asili_agents.tools.logging import get_decision_log, clear_decision_log
+
+
+# Application state
+_state: dict[str, Any] = {}
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize application state on startup."""
+    # Load demo data
+    seller, products, policy = get_demo_seller()
+    _state["seller"] = seller
+    _state["products"] = products
+    _state["policy"] = policy
+    _state["conversations"] = {}
+
+    # Initialize tool stores
+    set_product_store(products)
+    set_pricing_context(products, policy)
+
+    yield
+
+    # Cleanup
+    _state.clear()
+
+
+app = FastAPI(
+    title="Asili Operations Team API",
+    description="AI-powered multi-agent system for micro-sellers",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+# CORS for frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure properly in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ============================================================================
+# Request/Response Models
+# ============================================================================
+
+
+class SellerResponse(BaseModel):
+    """Seller information."""
+
+    id: str
+    name: str
+    lane: str
+    brand_voice: str
+
+
+class ProductResponse(BaseModel):
+    """Product information."""
+
+    id: str
+    sku: str
+    name: str
+    description: str
+    price: float
+    cost: float
+    margin_percent: float
+    stock_quantity: int
+    stock_level: str
+    unit: str
+
+
+class PolicyResponse(BaseModel):
+    """Policy information."""
+
+    margin_floor: float
+    bundle_discount_percent: float
+    shipping_note: str
+    returns_note: str
+
+
+class MessageResponse(BaseModel):
+    """Message in a conversation."""
+
+    id: str
+    direction: str
+    sender_name: str
+    body: str
+    status: str
+    timestamp: str
+    agent_name: str | None = None
+    sources: list[str] = []
+
+
+class ConversationResponse(BaseModel):
+    """Conversation details."""
+
+    id: str
+    customer_name: str
+    customer_initials: str
+    channel: str
+    status: str
+    messages: list[MessageResponse]
+
+
+class BusinessFactResponse(BaseModel):
+    """A grounded business fact for the UI."""
+
+    id: str
+    key: str
+    value: str
+    sub: str
+    tone: str = "default"
+
+
+class AgentStepResponse(BaseModel):
+    """An agent decision step for the UI."""
+
+    id: str
+    agent_name: str
+    agent_role: str
+    step_type: str
+    reasoning_trace: str
+    grounded_facts: list[str]
+    timestamp: str
+
+
+class RunAgentsRequest(BaseModel):
+    """Request to run agents on a conversation."""
+
+    conversation_id: str
+    message: str | None = None
+
+
+class RunAgentsResponse(BaseModel):
+    """Response from running agents."""
+
+    steps: list[AgentStepResponse]
+    draft: dict[str, Any] | None = None
+    facts: list[BusinessFactResponse]
+
+
+class ApprovalRequest(BaseModel):
+    """Request to approve/reject a draft."""
+
+    conversation_id: str
+    action: str = Field(..., pattern="^(approve|edit|reject)$")
+    edited_body: str | None = None
+
+
+class ApprovalResponse(BaseModel):
+    """Response from approval action."""
+
+    status: str
+    message: MessageResponse | None = None
+
+
+# ============================================================================
+# API Endpoints
+# ============================================================================
+
+
+@app.get("/")
+async def root():
+    """Health check endpoint."""
+    return {
+        "service": "Asili Operations Team",
+        "version": "0.1.0",
+        "status": "healthy",
+    }
+
+
+@app.get("/api/seller", response_model=SellerResponse)
+async def get_seller():
+    """Get the current seller information."""
+    seller = _state.get("seller")
+    if not seller:
+        raise HTTPException(status_code=500, detail="Seller not initialized")
+
+    return SellerResponse(
+        id=str(seller.id),
+        name=seller.name,
+        lane=seller.lane,
+        brand_voice=seller.brand_voice,
+    )
+
+
+@app.get("/api/products", response_model=list[ProductResponse])
+async def get_products():
+    """Get all products in the catalog."""
+    products = _state.get("products", [])
+    return [
+        ProductResponse(
+            id=str(p.id),
+            sku=p.sku,
+            name=p.name,
+            description=p.description,
+            price=float(p.price),
+            cost=float(p.cost),
+            margin_percent=p.margin_percent,
+            stock_quantity=p.stock_quantity,
+            stock_level=p.stock_level.value,
+            unit=p.unit,
+        )
+        for p in products
+    ]
+
+
+@app.get("/api/policy", response_model=PolicyResponse)
+async def get_policy():
+    """Get the seller's business policy."""
+    policy = _state.get("policy")
+    if not policy:
+        raise HTTPException(status_code=500, detail="Policy not initialized")
+
+    return PolicyResponse(
+        margin_floor=policy.margin_floor,
+        bundle_discount_percent=policy.bundle_discount_percent,
+        shipping_note=policy.shipping_note,
+        returns_note=policy.returns_note,
+    )
+
+
+@app.get("/api/facts", response_model=list[BusinessFactResponse])
+async def get_business_facts():
+    """Get grounded business facts for the UI."""
+    products = _state.get("products", [])
+    policy = _state.get("policy")
+
+    facts = []
+
+    # Find the Purple Tea product for the demo scenario
+    purple_tea = next((p for p in products if "purple" in p.name.lower()), None)
+
+    if purple_tea:
+        facts.extend([
+            BusinessFactResponse(
+                id="product",
+                key="Product",
+                value=purple_tea.name,
+                sub=f"{purple_tea.origin}",
+            ),
+            BusinessFactResponse(
+                id="price",
+                key="Unit price",
+                value=f"${purple_tea.price:.2f}",
+                sub=f"per {purple_tea.unit}",
+            ),
+            BusinessFactResponse(
+                id="cost",
+                key="Unit cost",
+                value=f"${purple_tea.cost:.2f}",
+                sub="landed",
+            ),
+            BusinessFactResponse(
+                id="margin",
+                key="Unit margin",
+                value=f"${purple_tea.margin:.2f}",
+                sub=f"{int(purple_tea.margin_percent * 100)}% · floor {int(policy.margin_floor * 100)}%",
+            ),
+            BusinessFactResponse(
+                id="stock",
+                key="In stock",
+                value=f"{purple_tea.stock_quantity} {purple_tea.unit}s",
+                sub="Low · reorder soon" if purple_tea.stock_level.value == "low" else "Healthy",
+                tone="signal" if purple_tea.stock_level.value == "low" else "default",
+            ),
+        ])
+
+    return facts
+
+
+@app.post("/api/conversations", response_model=ConversationResponse)
+async def create_conversation(customer_name: str = "Dana R."):
+    """Create a new conversation."""
+    from asili_agents.data.seed import create_demo_conversation
+
+    conversation = create_demo_conversation()
+    _state["conversations"][str(conversation.id)] = conversation
+
+    return _conversation_to_response(conversation)
+
+
+@app.get("/api/conversations/{conversation_id}", response_model=ConversationResponse)
+async def get_conversation(conversation_id: str):
+    """Get a conversation by ID."""
+    conversation = _state["conversations"].get(conversation_id)
+    if not conversation:
+        # Create default demo conversation
+        from asili_agents.data.seed import create_demo_conversation
+        conversation = create_demo_conversation()
+        _state["conversations"][str(conversation.id)] = conversation
+
+    return _conversation_to_response(conversation)
+
+
+@app.get("/api/decisions", response_model=list[AgentStepResponse])
+async def get_decisions():
+    """Get all logged agent decisions."""
+    decisions = get_decision_log()
+    return [
+        AgentStepResponse(
+            id=str(d.id),
+            agent_name=d.agent_name,
+            agent_role=d.agent_role,
+            step_type=d.step_type,
+            reasoning_trace=d.reasoning_trace,
+            grounded_facts=d.grounded_facts,
+            timestamp=d.timestamp.isoformat(),
+        )
+        for d in decisions
+    ]
+
+
+@app.post("/api/reset")
+async def reset_demo():
+    """Reset the demo state."""
+    clear_decision_log()
+    _state["conversations"] = {}
+
+    # Reinitialize with fresh demo data
+    seller, products, policy = get_demo_seller()
+    _state["seller"] = seller
+    _state["products"] = products
+    _state["policy"] = policy
+    set_product_store(products)
+    set_pricing_context(products, policy)
+
+    return {"status": "reset"}
+
+
+def _conversation_to_response(conversation: Conversation) -> ConversationResponse:
+    """Convert a Conversation to a response model."""
+    return ConversationResponse(
+        id=str(conversation.id),
+        customer_name=conversation.customer_name,
+        customer_initials=conversation.customer_initials,
+        channel=conversation.channel,
+        status=conversation.status.value,
+        messages=[
+            MessageResponse(
+                id=str(m.id),
+                direction=m.direction.value,
+                sender_name=m.sender_name,
+                body=m.body,
+                status=m.status.value,
+                timestamp=m.timestamp_display,
+                agent_name=m.agent_name,
+                sources=m.sources,
+            )
+            for m in conversation.messages
+        ],
+    )
