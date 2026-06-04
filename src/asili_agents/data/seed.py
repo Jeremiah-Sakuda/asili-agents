@@ -14,13 +14,12 @@ from decimal import Decimal
 from uuid import UUID
 
 from asili_agents.data.models import (
-    Seller,
-    Product,
-    Policy,
     Conversation,
-    Message,
-    MessageDirection,
     ConversationStatus,
+    MessageDirection,
+    Policy,
+    Product,
+    Seller,
 )
 
 # Fixed UUIDs for consistent demo data

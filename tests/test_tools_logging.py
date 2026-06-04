@@ -1,11 +1,10 @@
 """Tests for decision logging tools."""
 
-import pytest
 
 from asili_agents.tools.logging import (
-    log_decision,
-    get_decision_log,
     clear_decision_log,
+    get_decision_log,
+    log_decision,
 )
 
 

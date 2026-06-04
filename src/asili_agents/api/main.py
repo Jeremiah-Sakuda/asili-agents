@@ -8,26 +8,19 @@ This API provides:
 """
 
 from contextlib import asynccontextmanager
-from datetime import datetime
 from typing import Any
-from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from asili_agents.config import get_settings
-from asili_agents.data.seed import seed_demo_data, get_demo_seller
 from asili_agents.data.models import (
     Conversation,
-    Message,
-    MessageDirection,
-    ConversationStatus,
 )
+from asili_agents.data.seed import get_demo_seller
 from asili_agents.tools.catalog import set_product_store
+from asili_agents.tools.logging import clear_decision_log, get_decision_log
 from asili_agents.tools.pricing import set_pricing_context
-from asili_agents.tools.logging import get_decision_log, clear_decision_log
-
 
 # Application state
 _state: dict[str, Any] = {}

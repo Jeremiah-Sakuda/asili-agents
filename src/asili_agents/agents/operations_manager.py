@@ -5,14 +5,13 @@ specialist agents (Messaging, Pricing), composes the final reply,
 and sends it through the approval gate before delivery.
 """
 
-from google.adk.agents import LlmAgent, Agent
+from google.adk.agents import Agent
 
+from asili_agents.agents.messaging import create_messaging_agent
+from asili_agents.agents.pricing import create_pricing_agent
 from asili_agents.config import get_settings
 from asili_agents.tools.channel import send_for_approval
 from asili_agents.tools.logging import log_decision
-from asili_agents.agents.messaging import create_messaging_agent
-from asili_agents.agents.pricing import create_pricing_agent
-
 
 OPERATIONS_MANAGER_INSTRUCTION = """You are the Operations Manager for {seller_name}, a specialty tea seller ({lane}).
 

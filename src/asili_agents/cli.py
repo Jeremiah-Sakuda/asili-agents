@@ -14,7 +14,7 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # Demo command
-    demo_parser = subparsers.add_parser(
+    subparsers.add_parser(
         "demo",
         help="Run the demonstration scenario",
     )

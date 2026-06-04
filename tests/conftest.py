@@ -1,13 +1,13 @@
 """Pytest configuration and fixtures."""
 
-import pytest
-from decimal import Decimal
 
-from asili_agents.data.seed import get_demo_seller, create_demo_conversation
-from asili_agents.data.models import Product, Policy, Seller, Conversation
+import pytest
+
+from asili_agents.data.models import Conversation, Policy, Product, Seller
+from asili_agents.data.seed import create_demo_conversation, get_demo_seller
 from asili_agents.tools.catalog import set_product_store
-from asili_agents.tools.pricing import set_pricing_context
 from asili_agents.tools.logging import clear_decision_log
+from asili_agents.tools.pricing import set_pricing_context
 
 
 @pytest.fixture

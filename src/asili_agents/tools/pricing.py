@@ -5,12 +5,12 @@ arithmetic, not LLM generation. This ensures prices are always
 calculated correctly and respect the margin floor.
 """
 
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from asili_agents.data.models import Product, Policy
+from asili_agents.data.models import Policy, Product
 
 
 class BundleItem(BaseModel):

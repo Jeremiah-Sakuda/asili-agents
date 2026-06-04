@@ -1,16 +1,11 @@
 """Tests for data models."""
 
-import pytest
 from decimal import Decimal
 from uuid import UUID
 
 from asili_agents.data.models import (
-    Seller,
-    Product,
-    Policy,
-    Conversation,
-    Message,
     MessageDirection,
+    Product,
     StockLevel,
 )
 

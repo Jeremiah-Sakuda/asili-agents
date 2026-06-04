@@ -1,14 +1,14 @@
 """Data models and database utilities."""
 
 from asili_agents.data.models import (
-    Seller,
-    Product,
-    Policy,
+    AgentDecision,
     Conversation,
     Message,
-    AgentDecision,
+    Policy,
+    Product,
+    Seller,
 )
-from asili_agents.data.seed import seed_demo_data, get_demo_seller
+from asili_agents.data.seed import get_demo_seller, seed_demo_data
 
 __all__ = [
     "Seller",

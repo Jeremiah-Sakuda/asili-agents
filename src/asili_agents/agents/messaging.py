@@ -11,7 +11,6 @@ from asili_agents.config import get_settings
 from asili_agents.tools.catalog import catalog_search, check_stock
 from asili_agents.tools.logging import log_decision
 
-
 MESSAGING_INSTRUCTION = """You are the Messaging Agent for {seller_name}, a specialty tea seller.
 
 Your role is to handle customer conversations, ensuring every response is grounded in real catalog data.

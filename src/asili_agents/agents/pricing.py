@@ -10,9 +10,8 @@ from google.adk.agents import LlmAgent
 
 from asili_agents.config import get_settings
 from asili_agents.tools.catalog import get_costs
-from asili_agents.tools.pricing import compute_bundle_price
 from asili_agents.tools.logging import log_decision
-
+from asili_agents.tools.pricing import compute_bundle_price
 
 PRICING_INSTRUCTION = """You are the Pricing Agent for {seller_name}.
 

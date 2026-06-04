@@ -4,7 +4,6 @@ These tests verify that the compute_bundle_price tool produces
 correct, deterministic, margin-safe prices.
 """
 
-import pytest
 
 from asili_agents.tools.pricing import compute_bundle_price
 

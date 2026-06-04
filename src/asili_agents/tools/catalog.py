@@ -4,13 +4,11 @@ These tools provide grounded access to the seller's catalog data,
 ensuring agents never hallucinate product information.
 """
 
-from decimal import Decimal
 from typing import Any
-from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from asili_agents.data.models import Product, StockLevel
+from asili_agents.data.models import Product
 
 
 class ProductSearchResult(BaseModel):
@@ -91,7 +89,7 @@ def catalog_search(query: str) -> list[dict[str, Any]]:
 
     # Search through all products
     seen_ids: set[str] = set()
-    for key, product in _product_store.items():
+    for _key, product in _product_store.items():
         if str(product.id) in seen_ids:
             continue
 

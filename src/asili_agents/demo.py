@@ -7,22 +7,18 @@ and the monolithic baseline.
 Run with: python -m asili_agents.demo
 """
 
-import asyncio
-from datetime import datetime
 from typing import Any
 
 from asili_agents.config import get_settings
-from asili_agents.data.seed import get_demo_seller, create_demo_conversation
-from asili_agents.data.models import Product
+from asili_agents.data.seed import create_demo_conversation, get_demo_seller
 from asili_agents.tools.catalog import (
-    set_product_store,
     catalog_search,
     check_stock,
     get_costs,
+    set_product_store,
 )
-from asili_agents.tools.pricing import set_pricing_context, compute_bundle_price
-from asili_agents.tools.logging import log_decision, get_decision_log, clear_decision_log
-from asili_agents.agents.baseline import generate_catalog_dump_from_products
+from asili_agents.tools.logging import clear_decision_log, get_decision_log, log_decision
+from asili_agents.tools.pricing import compute_bundle_price, set_pricing_context
 
 
 def print_header(title: str) -> None:

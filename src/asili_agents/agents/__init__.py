@@ -8,10 +8,10 @@ This module provides the three-agent system:
 Plus the monolithic baseline for comparison.
 """
 
-from asili_agents.agents.messaging import create_messaging_agent
-from asili_agents.agents.pricing import create_pricing_agent
-from asili_agents.agents.operations_manager import create_operations_manager
 from asili_agents.agents.baseline import create_baseline_agent
+from asili_agents.agents.messaging import create_messaging_agent
+from asili_agents.agents.operations_manager import create_operations_manager
+from asili_agents.agents.pricing import create_pricing_agent
 
 __all__ = [
     "create_messaging_agent",

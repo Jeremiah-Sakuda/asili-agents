@@ -1,6 +1,5 @@
 """Tests for catalog tools."""
 
-import pytest
 
 from asili_agents.tools.catalog import (
     catalog_search,

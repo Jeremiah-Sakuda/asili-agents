@@ -12,7 +12,6 @@ from google.adk.agents import LlmAgent
 
 from asili_agents.config import get_settings
 
-
 BASELINE_INSTRUCTION = """You are a helpful assistant for {seller_name}, a specialty tea seller.
 
 Answer customer questions about products and pricing.
