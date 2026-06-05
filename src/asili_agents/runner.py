@@ -25,12 +25,23 @@ from asili_agents.tools.pricing import set_pricing_context
 def _configure_api_credentials() -> None:
     """Configure Google API credentials from settings.
 
-    Sets the GOOGLE_API_KEY environment variable if configured,
-    which ADK uses for Gemini API authentication.
+    Supports two authentication methods:
+    1. GOOGLE_API_KEY - Direct Gemini API access (simpler for local dev)
+    2. GOOGLE_APPLICATION_CREDENTIALS - GCP service account (Vertex AI)
+
+    ADK will use whichever is available.
     """
     settings = get_settings()
+
+    # Set API key if provided
     if settings.google_api_key and not os.environ.get("GOOGLE_API_KEY"):
         os.environ["GOOGLE_API_KEY"] = settings.google_api_key
+
+    # Set service account credentials if provided
+    if settings.google_application_credentials and not os.environ.get(
+        "GOOGLE_APPLICATION_CREDENTIALS"
+    ):
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.google_application_credentials
 
 
 @dataclass

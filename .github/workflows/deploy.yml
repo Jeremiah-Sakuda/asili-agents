@@ -1,11 +1,16 @@
 name: Deploy to Agent Engine
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
+  # Manual deployment only until GCP secrets are configured
+  # To enable auto-deploy: uncomment push trigger and configure secrets:
+  #   - GCP_PROJECT_ID
+  #   - WIF_PROVIDER
+  #   - WIF_SERVICE_ACCOUNT
+  # push:
+  #   branches: [main]
+  #   paths-ignore:
+  #     - "**.md"
+  #     - "docs/**"
   workflow_dispatch:
     inputs:
       environment:
@@ -26,8 +31,6 @@ jobs:
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
-    # Only deploy from main branch
-    if: github.ref == 'refs/heads/main'
 
     permissions:
       contents: read

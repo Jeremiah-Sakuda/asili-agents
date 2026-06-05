@@ -32,6 +32,12 @@ class Settings(BaseSettings):
         description="Google Gemini API key (alternative to Vertex AI)",
     )
 
+    # GCP Service Account (for Vertex AI authentication)
+    google_application_credentials: str | None = Field(
+        default=None,
+        description="Path to GCP service account JSON file",
+    )
+
     # Vertex AI
     vertex_search_datastore_id: str | None = Field(
         default=None,
