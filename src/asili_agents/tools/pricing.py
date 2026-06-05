@@ -138,15 +138,17 @@ def compute_bundle_price(
         total_regular += item_price
         total_cost += item_cost
 
-        resolved_items.append({
-            "product_id": str(product.id),
-            "product_name": product.name,
-            "quantity": quantity,
-            "unit_price": float(product.price),
-            "line_price": float(item_price),
-            "unit_cost": float(product.cost),
-            "line_cost": float(item_cost),
-        })
+        resolved_items.append(
+            {
+                "product_id": str(product.id),
+                "product_name": product.name,
+                "quantity": quantity,
+                "unit_price": float(product.price),
+                "line_price": float(item_price),
+                "unit_cost": float(product.cost),
+                "line_cost": float(item_cost),
+            }
+        )
 
     if errors:
         return {
@@ -193,12 +195,12 @@ def compute_bundle_price(
     # Generate rationale
     if bundle_price == discounted_price:
         rationale = (
-            f"Bundle priced at {bundle_discount*100:.0f}% discount. "
-            f"Margin {actual_margin_percent*100:.0f}% is above the {effective_margin_floor*100:.0f}% floor."
+            f"Bundle priced at {bundle_discount * 100:.0f}% discount. "
+            f"Margin {actual_margin_percent * 100:.0f}% is above the {effective_margin_floor * 100:.0f}% floor."
         )
     else:
         rationale = (
-            f"Bundle priced to maintain {effective_margin_floor*100:.0f}% margin floor. "
+            f"Bundle priced to maintain {effective_margin_floor * 100:.0f}% margin floor. "
             f"Standard discount would have been below margin."
         )
 

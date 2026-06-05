@@ -64,9 +64,7 @@ class Seller(BaseModel):
         description="Tone/style for AI-generated messages",
     )
     origin_country: str = Field(..., description="Country of origin (e.g., 'KE')")
-    destination_country: str = Field(
-        default="US", description="Primary destination market"
-    )
+    destination_country: str = Field(default="US", description="Primary destination market")
     currency: str = Field(default="USD", description="Display currency")
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
@@ -94,9 +92,7 @@ class Product(BaseModel):
 
     # Inventory
     stock_quantity: int = Field(default=0, description="Current stock level")
-    low_stock_threshold: int = Field(
-        default=8, description="Threshold for 'low stock' warning"
-    )
+    low_stock_threshold: int = Field(default=8, description="Threshold for 'low stock' warning")
     unit: str = Field(default="unit", description="Unit of measure (e.g., 'tin', 'bag')")
 
     # Metadata
@@ -144,9 +140,7 @@ class Policy(BaseModel):
     seller_id: UUID = Field(..., description="Reference to the seller")
 
     # Pricing policies
-    margin_floor: float = Field(
-        default=0.45, description="Minimum acceptable margin (45% = 0.45)"
-    )
+    margin_floor: float = Field(default=0.45, description="Minimum acceptable margin (45% = 0.45)")
     bundle_discount_percent: float = Field(
         default=0.05, description="Discount for bundles (5% = 0.05)"
     )
@@ -184,9 +178,7 @@ class Message(BaseModel):
     status: MessageStatus = Field(default=MessageStatus.SENT)
 
     # Agent metadata (for outbound messages)
-    agent_name: str | None = Field(
-        default=None, description="Agent that generated this message"
-    )
+    agent_name: str | None = Field(default=None, description="Agent that generated this message")
     sources: list[str] = Field(
         default_factory=list, description="Data sources used to generate the message"
     )

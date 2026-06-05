@@ -128,10 +128,9 @@ class TestAgentExecution:
         assert result.draft is not None
         assert len(result.draft) > 0
 
-        # Should have logged decisions
-        decisions = get_decision_log()
-        # At minimum, should have some log entries from tool calls or agent actions
+        # Decision log may have entries from tool calls
         # (The exact number depends on agent behavior)
+        _ = get_decision_log()  # Verify it doesn't error
 
         # Should have called tools (check via raw events for function calls)
         tool_calls = []

@@ -276,39 +276,43 @@ async def get_business_facts():
     purple_tea = next((p for p in products if "purple" in p.name.lower()), None)
 
     if purple_tea:
-        facts.extend([
-            BusinessFactResponse(
-                id="product",
-                key="Product",
-                value=purple_tea.name,
-                sub=f"{purple_tea.origin}",
-            ),
-            BusinessFactResponse(
-                id="price",
-                key="Unit price",
-                value=f"${purple_tea.price:.2f}",
-                sub=f"per {purple_tea.unit}",
-            ),
-            BusinessFactResponse(
-                id="cost",
-                key="Unit cost",
-                value=f"${purple_tea.cost:.2f}",
-                sub="landed",
-            ),
-            BusinessFactResponse(
-                id="margin",
-                key="Unit margin",
-                value=f"${purple_tea.margin:.2f}",
-                sub=f"{int(purple_tea.margin_percent * 100)}% · floor {int(policy.margin_floor * 100)}%",
-            ),
-            BusinessFactResponse(
-                id="stock",
-                key="In stock",
-                value=f"{purple_tea.stock_quantity} {purple_tea.unit}s",
-                sub="Low · reorder soon" if purple_tea.stock_level.value == "low" else "Healthy",
-                tone="signal" if purple_tea.stock_level.value == "low" else "default",
-            ),
-        ])
+        facts.extend(
+            [
+                BusinessFactResponse(
+                    id="product",
+                    key="Product",
+                    value=purple_tea.name,
+                    sub=f"{purple_tea.origin}",
+                ),
+                BusinessFactResponse(
+                    id="price",
+                    key="Unit price",
+                    value=f"${purple_tea.price:.2f}",
+                    sub=f"per {purple_tea.unit}",
+                ),
+                BusinessFactResponse(
+                    id="cost",
+                    key="Unit cost",
+                    value=f"${purple_tea.cost:.2f}",
+                    sub="landed",
+                ),
+                BusinessFactResponse(
+                    id="margin",
+                    key="Unit margin",
+                    value=f"${purple_tea.margin:.2f}",
+                    sub=f"{int(purple_tea.margin_percent * 100)}% · floor {int(policy.margin_floor * 100)}%",
+                ),
+                BusinessFactResponse(
+                    id="stock",
+                    key="In stock",
+                    value=f"{purple_tea.stock_quantity} {purple_tea.unit}s",
+                    sub="Low · reorder soon"
+                    if purple_tea.stock_level.value == "low"
+                    else "Healthy",
+                    tone="signal" if purple_tea.stock_level.value == "low" else "default",
+                ),
+            ]
+        )
 
     return facts
 
@@ -331,6 +335,7 @@ async def get_conversation(conversation_id: str):
     if not conversation:
         # Create default demo conversation
         from asili_agents.data.seed import create_demo_conversation
+
         conversation = create_demo_conversation()
         _state["conversations"][str(conversation.id)] = conversation
 
@@ -581,39 +586,41 @@ def _get_grounded_facts_for_response(products: list, policy) -> list[BusinessFac
             margin_floor=policy.margin_floor,
         )
 
-        facts.extend([
-            BusinessFactResponse(
-                id="product",
-                key="Product",
-                value=purple_tea.name,
-                sub=purple_tea.origin,
-            ),
-            BusinessFactResponse(
-                id="price",
-                key="Unit price",
-                value=f"${purple_tea.price:.2f}",
-                sub=f"per {purple_tea.unit}",
-            ),
-            BusinessFactResponse(
-                id="cost",
-                key="Unit cost",
-                value=f"${cost_info.get('unit_cost', 0):.2f}",
-                sub="landed",
-            ),
-            BusinessFactResponse(
-                id="margin",
-                key="Unit margin",
-                value=f"${cost_info.get('unit_margin', 0):.2f}",
-                sub=f"{int(cost_info.get('margin_percent', 0) * 100)}% - floor {int(policy.margin_floor * 100)}%",
-            ),
-            BusinessFactResponse(
-                id="stock",
-                key="In stock",
-                value=f"{stock_info.get('quantity', 0)} {purple_tea.unit}s",
-                sub="Low - reorder soon" if stock_info.get("level") == "low" else "Healthy",
-                tone="signal" if stock_info.get("level") == "low" else "default",
-            ),
-        ])
+        facts.extend(
+            [
+                BusinessFactResponse(
+                    id="product",
+                    key="Product",
+                    value=purple_tea.name,
+                    sub=purple_tea.origin,
+                ),
+                BusinessFactResponse(
+                    id="price",
+                    key="Unit price",
+                    value=f"${purple_tea.price:.2f}",
+                    sub=f"per {purple_tea.unit}",
+                ),
+                BusinessFactResponse(
+                    id="cost",
+                    key="Unit cost",
+                    value=f"${cost_info.get('unit_cost', 0):.2f}",
+                    sub="landed",
+                ),
+                BusinessFactResponse(
+                    id="margin",
+                    key="Unit margin",
+                    value=f"${cost_info.get('unit_margin', 0):.2f}",
+                    sub=f"{int(cost_info.get('margin_percent', 0) * 100)}% - floor {int(policy.margin_floor * 100)}%",
+                ),
+                BusinessFactResponse(
+                    id="stock",
+                    key="In stock",
+                    value=f"{stock_info.get('quantity', 0)} {purple_tea.unit}s",
+                    sub="Low - reorder soon" if stock_info.get("level") == "low" else "Healthy",
+                    tone="signal" if stock_info.get("level") == "low" else "default",
+                ),
+            ]
+        )
 
         if "bundle_price" in bundle_result:
             facts.append(

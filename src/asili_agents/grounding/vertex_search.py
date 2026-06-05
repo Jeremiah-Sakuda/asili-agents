@@ -47,11 +47,11 @@ class VertexSearchClient:
                 from google.cloud import discoveryengine_v1 as discoveryengine
 
                 self._client = discoveryengine.SearchServiceClient()
-            except ImportError:
+            except ImportError as err:
                 raise ImportError(
                     "google-cloud-discoveryengine is required for Vertex AI Search. "
                     "Install with: pip install google-cloud-discoveryengine"
-                )
+                ) from err
         return self._client
 
     def search(

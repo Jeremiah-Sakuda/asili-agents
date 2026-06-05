@@ -45,11 +45,13 @@ def main() -> int:
 
     if args.command == "demo":
         from asili_agents.demo import main as demo_main
+
         demo_main()
         return 0
 
     elif args.command == "serve":
         import uvicorn
+
         uvicorn.run(
             "asili_agents.api.main:app",
             host=args.host,

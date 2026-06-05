@@ -91,10 +91,14 @@ Set the following environment variables in `.env`:
 GOOGLE_CLOUD_PROJECT=your-project-id
 GOOGLE_CLOUD_LOCATION=us-central1
 
-# Vertex AI Search (for catalog grounding)
+# Google Gemini API Key (for local development)
+# Get one at: https://aistudio.google.com/app/apikey
+GOOGLE_API_KEY=your-api-key
+
+# Vertex AI Search (optional, for catalog grounding in production)
 VERTEX_SEARCH_DATASTORE_ID=your-datastore-id
 
-# Telegram
+# Telegram (optional, for channel integration)
 TELEGRAM_BOT_TOKEN=your-bot-token
 
 # Database
@@ -166,19 +170,33 @@ The demo features **Mahaba Tea Co.**, a Kenyan tea seller:
 
 ## Deployment
 
-### Agent Engine
+### Cloud Run
 
 ```bash
-# Deploy to Vertex AI Agent Engine
+# Deploy to Google Cloud Run
 ./scripts/deploy.sh
 ```
+
+The deploy script will:
+1. Enable required GCP APIs (Cloud Run, Vertex AI, Artifact Registry)
+2. Build and push the Docker image
+3. Deploy to Cloud Run with auto-scaling
 
 ### Environment Setup
 
 The system requires a Google Cloud project with:
 - Vertex AI API enabled
-- Vertex AI Search configured with catalog data
+- Cloud Run API enabled
+- (Optional) Vertex AI Search configured with catalog data
 - Service account with appropriate permissions
+
+### Running Integration Tests
+
+To run tests that execute real agent workflows:
+
+```bash
+GOOGLE_API_KEY=your-api-key pytest tests/test_agents.py -v
+```
 
 ## License
 

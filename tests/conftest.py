@@ -1,6 +1,5 @@
 """Pytest configuration and fixtures."""
 
-
 import pytest
 
 from asili_agents.data.models import Conversation, Policy, Product, Seller

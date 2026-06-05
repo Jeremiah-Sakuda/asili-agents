@@ -1,6 +1,5 @@
 """Tests for catalog tools."""
 
-
 from asili_agents.tools.catalog import (
     catalog_search,
     check_stock,

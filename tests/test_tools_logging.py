@@ -1,6 +1,5 @@
 """Tests for decision logging tools."""
 
-
 from asili_agents.tools.logging import (
     clear_decision_log,
     get_decision_log,

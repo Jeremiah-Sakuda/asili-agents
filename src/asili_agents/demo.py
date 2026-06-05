@@ -80,7 +80,9 @@ def analyze_baseline_failures(response: str, stock_info: dict, bundle_result: di
         total_cost = bundle_result.get("total_cost", 14.80)
         if price > 0 and price < total_cost / (1 - margin_floor):
             margin = (price - total_cost) / price if price > total_cost else 0
-            failures.append(f"below margin: ${price:.0f} -> {int(margin * 100)}% margin (floor: 45%)")
+            failures.append(
+                f"below margin: ${price:.0f} -> {int(margin * 100)}% margin (floor: 45%)"
+            )
 
     return failures
 
@@ -142,22 +144,28 @@ def run_demo_scenario() -> None:
     # Show agent steps
     print_header("AGENT WORKFLOW (Real Execution)")
     for step in result.steps:
-        print_step({
-            "agent_name": step.agent_name,
-            "agent_role": step.agent_role,
-            "reasoning_trace": step.reasoning_trace,
-            "grounded_facts": step.grounded_facts,
-            "tool_calls": step.tool_calls,
-        })
+        print_step(
+            {
+                "agent_name": step.agent_name,
+                "agent_role": step.agent_role,
+                "reasoning_trace": step.reasoning_trace,
+                "grounded_facts": step.grounded_facts,
+                "tool_calls": step.tool_calls,
+            }
+        )
 
     # Get grounded business facts for display
     purple_tea = next((p for p in products if "purple" in p.name.lower()), None)
     stock_info = check_stock("Purple Tea") if purple_tea else {}
     cost_info = get_costs("Purple Tea") if purple_tea else {}
-    bundle_result = compute_bundle_price(
-        items=[{"product_id": str(purple_tea.id), "quantity": 2}],
-        margin_floor=policy.margin_floor,
-    ) if purple_tea else {}
+    bundle_result = (
+        compute_bundle_price(
+            items=[{"product_id": str(purple_tea.id), "quantity": 2}],
+            margin_floor=policy.margin_floor,
+        )
+        if purple_tea
+        else {}
+    )
 
     # Show business facts
     print_header("GROUNDED BUSINESS STATE")
