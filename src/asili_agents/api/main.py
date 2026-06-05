@@ -16,11 +16,15 @@ from pydantic import BaseModel, Field
 
 from asili_agents.data.models import (
     Conversation,
+    MessageDirection,
+    MessageStatus,
 )
 from asili_agents.data.seed import get_demo_seller
-from asili_agents.tools.catalog import set_product_store
+from asili_agents.runner import create_baseline_runner, create_runner, run_agent, run_baseline
+from asili_agents.tools.catalog import check_stock, get_costs, set_product_store
+from asili_agents.tools.channel import ApprovalResult, ApprovalStatus, set_approval_callback
 from asili_agents.tools.logging import clear_decision_log, get_decision_log
-from asili_agents.tools.pricing import set_pricing_context
+from asili_agents.tools.pricing import compute_bundle_price, set_pricing_context
 
 # Application state
 _state: dict[str, Any] = {}
@@ -35,10 +39,27 @@ async def lifespan(app: FastAPI):
     _state["products"] = products
     _state["policy"] = policy
     _state["conversations"] = {}
+    _state["pending_drafts"] = {}  # conversation_id -> draft info
+    _state["runners"] = {}  # conversation_id -> runner
 
     # Initialize tool stores
     set_product_store(products)
     set_pricing_context(products, policy)
+
+    # Set up approval callback to store pending drafts
+    def approval_callback(draft_id: str, body: str) -> ApprovalResult:
+        # Store the draft as pending - actual approval happens via /api/approve
+        _state["pending_drafts"][draft_id] = {
+            "body": body,
+            "status": "pending",
+        }
+        return ApprovalResult(
+            status=ApprovalStatus.PENDING,
+            draft_id=draft_id,
+            body=body,
+        )
+
+    set_approval_callback(approval_callback)
 
     yield
 
@@ -339,6 +360,8 @@ async def reset_demo():
     """Reset the demo state."""
     clear_decision_log()
     _state["conversations"] = {}
+    _state["pending_drafts"] = {}
+    _state["runners"] = {}
 
     # Reinitialize with fresh demo data
     seller, products, policy = get_demo_seller()
@@ -349,6 +372,261 @@ async def reset_demo():
     set_pricing_context(products, policy)
 
     return {"status": "reset"}
+
+
+@app.post("/api/run", response_model=RunAgentsResponse)
+async def run_agents(request: RunAgentsRequest):
+    """Run the multi-agent system on a conversation.
+
+    This endpoint executes the real ADK agents on the customer message,
+    returning the agent steps, grounded facts, and composed draft reply.
+    """
+    seller = _state.get("seller")
+    products = _state.get("products", [])
+    policy = _state.get("policy")
+
+    if not seller or not policy:
+        raise HTTPException(status_code=500, detail="Demo data not initialized")
+
+    # Get or create conversation
+    conversation = _state["conversations"].get(request.conversation_id)
+    if not conversation:
+        from asili_agents.data.seed import create_demo_conversation
+
+        conversation = create_demo_conversation()
+        _state["conversations"][str(conversation.id)] = conversation
+
+    # Get the customer message (use provided or last inbound message)
+    if request.message:
+        customer_message = request.message
+    else:
+        inbound_messages = [m for m in conversation.messages if m.direction.value == "inbound"]
+        if not inbound_messages:
+            raise HTTPException(status_code=400, detail="No customer message found")
+        customer_message = inbound_messages[-1].body
+
+    # Create and run the agent system
+    runner = create_runner(seller, products, policy)
+    _state["runners"][request.conversation_id] = runner
+
+    result = run_agent(runner, customer_message)
+
+    if not result.success:
+        raise HTTPException(status_code=500, detail=f"Agent execution failed: {result.error}")
+
+    # Store the draft for approval
+    if result.draft:
+        draft_id = f"draft_{request.conversation_id}"
+        _state["pending_drafts"][request.conversation_id] = {
+            "draft_id": draft_id,
+            "body": result.draft,
+            "sources": result.draft_sources,
+            "status": "pending",
+        }
+
+    # Build response
+    steps = [
+        AgentStepResponse(
+            id=step.id,
+            agent_name=step.agent_name,
+            agent_role=step.agent_role,
+            step_type=step.step_type,
+            reasoning_trace=step.reasoning_trace,
+            grounded_facts=step.grounded_facts,
+            timestamp=step.timestamp.isoformat(),
+        )
+        for step in result.steps
+    ]
+
+    # Get grounded facts for UI display
+    facts = _get_grounded_facts_for_response(products, policy)
+
+    # Build draft response
+    draft_response = None
+    if result.draft:
+        draft_response = {
+            "body": result.draft,
+            "sources": result.draft_sources,
+            "status": "pending",
+        }
+
+    return RunAgentsResponse(
+        steps=steps,
+        draft=draft_response,
+        facts=facts,
+    )
+
+
+@app.post("/api/run/baseline")
+async def run_baseline_agent(request: RunAgentsRequest):
+    """Run the baseline (single-model) agent for comparison.
+
+    This endpoint executes the baseline agent which has no tools,
+    demonstrating the failure modes of a naive LLM approach.
+    """
+    seller = _state.get("seller")
+    products = _state.get("products", [])
+
+    if not seller:
+        raise HTTPException(status_code=500, detail="Demo data not initialized")
+
+    # Get or create conversation
+    conversation = _state["conversations"].get(request.conversation_id)
+    if not conversation:
+        from asili_agents.data.seed import create_demo_conversation
+
+        conversation = create_demo_conversation()
+        _state["conversations"][str(conversation.id)] = conversation
+
+    # Get the customer message
+    if request.message:
+        customer_message = request.message
+    else:
+        inbound_messages = [m for m in conversation.messages if m.direction.value == "inbound"]
+        if not inbound_messages:
+            raise HTTPException(status_code=400, detail="No customer message found")
+        customer_message = inbound_messages[-1].body
+
+    # Create and run the baseline agent
+    baseline_runner = create_baseline_runner(seller, products)
+    response_text, raw_events = run_baseline(baseline_runner, customer_message)
+
+    return {
+        "response": response_text,
+        "events_count": len(raw_events),
+        "has_tools": False,
+        "grounded": False,
+    }
+
+
+@app.post("/api/approve", response_model=ApprovalResponse)
+async def approve_draft(request: ApprovalRequest):
+    """Process approval/rejection of a pending draft message.
+
+    Actions:
+    - approve: Send the draft as-is
+    - edit: Send the edited version
+    - reject: Discard the draft
+    """
+    pending = _state["pending_drafts"].get(request.conversation_id)
+    if not pending:
+        raise HTTPException(status_code=404, detail="No pending draft for this conversation")
+
+    conversation = _state["conversations"].get(request.conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+
+    if request.action == "reject":
+        # Discard the draft
+        del _state["pending_drafts"][request.conversation_id]
+        return ApprovalResponse(status="rejected", message=None)
+
+    # Approve or edit
+    final_body = request.edited_body if request.action == "edit" else pending["body"]
+
+    # Add the message to the conversation
+    message = conversation.add_message(
+        direction=MessageDirection.OUTBOUND,
+        sender_name="Asili Agent",
+        body=final_body,
+        agent_name="Operations Manager",
+        sources=pending.get("sources", []),
+    )
+    message.status = MessageStatus.SENT
+
+    # Clear the pending draft
+    del _state["pending_drafts"][request.conversation_id]
+
+    return ApprovalResponse(
+        status="approved" if request.action == "approve" else "edited",
+        message=MessageResponse(
+            id=str(message.id),
+            direction=message.direction.value,
+            sender_name=message.sender_name,
+            body=message.body,
+            status=message.status.value,
+            timestamp=message.timestamp_display,
+            agent_name=message.agent_name,
+            sources=message.sources,
+        ),
+    )
+
+
+@app.get("/api/pending/{conversation_id}")
+async def get_pending_draft(conversation_id: str):
+    """Get the pending draft for a conversation, if any."""
+    pending = _state["pending_drafts"].get(conversation_id)
+    if not pending:
+        return {"has_pending": False}
+
+    return {
+        "has_pending": True,
+        "draft": pending,
+    }
+
+
+def _get_grounded_facts_for_response(products: list, policy) -> list[BusinessFactResponse]:
+    """Get grounded facts based on tool calls during agent run."""
+    facts = []
+
+    # Find the Purple Tea product (demo scenario focus)
+    purple_tea = next((p for p in products if "purple" in p.name.lower()), None)
+
+    if purple_tea:
+        # Get real data from tools
+        stock_info = check_stock(str(purple_tea.id))
+        cost_info = get_costs(str(purple_tea.id))
+        bundle_result = compute_bundle_price(
+            items=[{"product_id": str(purple_tea.id), "quantity": 2}],
+            margin_floor=policy.margin_floor,
+        )
+
+        facts.extend([
+            BusinessFactResponse(
+                id="product",
+                key="Product",
+                value=purple_tea.name,
+                sub=purple_tea.origin,
+            ),
+            BusinessFactResponse(
+                id="price",
+                key="Unit price",
+                value=f"${purple_tea.price:.2f}",
+                sub=f"per {purple_tea.unit}",
+            ),
+            BusinessFactResponse(
+                id="cost",
+                key="Unit cost",
+                value=f"${cost_info.get('unit_cost', 0):.2f}",
+                sub="landed",
+            ),
+            BusinessFactResponse(
+                id="margin",
+                key="Unit margin",
+                value=f"${cost_info.get('unit_margin', 0):.2f}",
+                sub=f"{int(cost_info.get('margin_percent', 0) * 100)}% - floor {int(policy.margin_floor * 100)}%",
+            ),
+            BusinessFactResponse(
+                id="stock",
+                key="In stock",
+                value=f"{stock_info.get('quantity', 0)} {purple_tea.unit}s",
+                sub="Low - reorder soon" if stock_info.get("level") == "low" else "Healthy",
+                tone="signal" if stock_info.get("level") == "low" else "default",
+            ),
+        ])
+
+        if "bundle_price" in bundle_result:
+            facts.append(
+                BusinessFactResponse(
+                    id="bundle",
+                    key="Bundle (2 tins)",
+                    value=f"${bundle_result['bundle_price']:.2f}",
+                    sub=f"{int(bundle_result['margin_percent'] * 100)}% margin",
+                    tone="accent",
+                )
+            )
+
+    return facts
 
 
 def _conversation_to_response(conversation: Conversation) -> ConversationResponse:
