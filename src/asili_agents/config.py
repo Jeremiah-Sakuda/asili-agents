@@ -26,6 +26,12 @@ class Settings(BaseSettings):
         description="Google Cloud region",
     )
 
+    # Gemini API (for local development without Vertex AI)
+    google_api_key: str | None = Field(
+        default=None,
+        description="Google Gemini API key (alternative to Vertex AI)",
+    )
+
     # Vertex AI
     vertex_search_datastore_id: str | None = Field(
         default=None,

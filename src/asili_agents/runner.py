@@ -4,6 +4,7 @@ This module provides the actual agent execution layer using Google ADK's
 InMemoryRunner. It replaces the scripted demo with real LLM agent runs.
 """
 
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -14,10 +15,22 @@ from google.genai import types
 
 from asili_agents.agents.baseline import create_baseline_agent, generate_catalog_dump_from_products
 from asili_agents.agents.operations_manager import create_operations_manager
+from asili_agents.config import get_settings
 from asili_agents.data.models import Policy, Product, Seller
 from asili_agents.tools.catalog import set_product_store
 from asili_agents.tools.logging import clear_decision_log, get_decision_log
 from asili_agents.tools.pricing import set_pricing_context
+
+
+def _configure_api_credentials() -> None:
+    """Configure Google API credentials from settings.
+
+    Sets the GOOGLE_API_KEY environment variable if configured,
+    which ADK uses for Gemini API authentication.
+    """
+    settings = get_settings()
+    if settings.google_api_key and not os.environ.get("GOOGLE_API_KEY"):
+        os.environ["GOOGLE_API_KEY"] = settings.google_api_key
 
 
 @dataclass
@@ -62,6 +75,9 @@ def create_runner(
     Returns:
         Configured InMemoryRunner ready to execute.
     """
+    # Configure API credentials
+    _configure_api_credentials()
+
     # Initialize tool stores
     set_product_store(products)
     set_pricing_context(products, policy)
@@ -94,6 +110,9 @@ def create_baseline_runner(
     Returns:
         Configured InMemoryRunner for baseline comparison.
     """
+    # Configure API credentials
+    _configure_api_credentials()
+
     catalog_dump = generate_catalog_dump_from_products(products)
 
     agent = create_baseline_agent(
@@ -121,8 +140,20 @@ def run_agent(
     Returns:
         RunResult with steps, draft, facts, and raw events.
     """
+    import asyncio
+
     user_id = user_id or f"user_{uuid.uuid4().hex[:8]}"
     session_id = session_id or f"session_{uuid.uuid4().hex[:8]}"
+
+    # Create session first (required by InMemoryRunner)
+    async def create_session():
+        return await runner.session_service.create_session(
+            app_name=runner.app_name,
+            user_id=user_id,
+            session_id=session_id,
+        )
+
+    asyncio.run(create_session())
 
     # Create the user message
     user_message = types.Content(
@@ -224,8 +255,20 @@ def run_baseline(
     Returns:
         Tuple of (response_text, raw_events).
     """
+    import asyncio
+
     user_id = user_id or f"user_{uuid.uuid4().hex[:8]}"
     session_id = session_id or f"session_{uuid.uuid4().hex[:8]}"
+
+    # Create session first (required by InMemoryRunner)
+    async def create_session():
+        return await runner.session_service.create_session(
+            app_name=runner.app_name,
+            user_id=user_id,
+            session_id=session_id,
+        )
+
+    asyncio.run(create_session())
 
     user_message = types.Content(
         role="user",
