@@ -113,16 +113,27 @@ def build_live_reply_fns(
         run_baseline,
     )
 
-    retrieval_markers = ("catalog", "check_stock", "get_costs", "find", "aggregate", "count")
+    # Precise set of read tools (in-process + MongoDB MCP). retrieved is based on
+    # an ACTUAL call to one of these, not a substring of the reasoning trace.
+    read_tools = {
+        "catalog_search",
+        "check_stock",
+        "get_costs",
+        "find",
+        "aggregate",
+        "count",
+        "list-collections",
+        "collection-schema",
+    }
 
     def team_reply(prompt: str) -> dict[str, Any]:
         runner = create_runner(seller, products, policy, repository=repository, use_mcp=use_mcp)
         result = run_agent(runner, prompt)
-        # The team retrieved iff it actually called a catalog/stock/MCP read tool
-        # (or logged grounded facts) — not merely produced fluent text.
+        # The team retrieved iff it actually invoked a catalog/stock read tool
+        # (or logged grounded facts) — not merely mentioned one in prose.
         retrieved = any(
             bool(step.grounded_facts)
-            or any(m in (step.reasoning_trace or "").lower() for m in retrieval_markers)
+            or any((tc.get("name") in read_tools) for tc in (step.tool_calls or []))
             for step in result.steps
         )
         return {"text": result.draft, "retrieved": retrieved}
