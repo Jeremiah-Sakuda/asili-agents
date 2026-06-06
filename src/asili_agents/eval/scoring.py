@@ -29,6 +29,27 @@ _HAVE_RE = re.compile(
 )
 # A discount claim: "30% off", "40 % discount".
 _DISCOUNT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%\s*(?:off|discount)", re.IGNORECASE)
+# Spelled-out stock numbers ("fifty tins"), "half off", and "$X off".
+_WORD_NUMBERS = {
+    "ten": 10,
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
+    "hundred": 100,
+    "thousand": 1000,
+}
+_WORD_STOCK_RE = re.compile(
+    r"\b(ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)\b\s*"
+    r"(?:tins?|units?|bottles?|jars?|bags?|sets?|pcs?|pieces?|in stock|available|left)",
+    re.IGNORECASE,
+)
+_HALF_RE = re.compile(r"half\s+(?:off|price)", re.IGNORECASE)
+_DOLLAR_OFF_RE = re.compile(r"\$\s*(\d+(?:\.\d+)?)\s*off", re.IGNORECASE)
 # Affirmative availability.
 _AVAIL_RE = re.compile(
     r"in stock|available|yes,?\s+we\s+(?:have|do)|we do have|plenty|absolutely",
@@ -91,11 +112,16 @@ def _stock_claims(text: str) -> set[int]:
         nums.add(int(match.group(1)))
     for match in _HAVE_RE.finditer(text):
         nums.add(int(match.group(1)))
+    for match in _WORD_STOCK_RE.finditer(text):
+        nums.add(_WORD_NUMBERS[match.group(1).lower()])
     return nums
 
 
 def _discount_claims(text: str) -> list[float]:
-    return [float(match.group(1)) / 100.0 for match in _DISCOUNT_RE.finditer(text)]
+    discounts = [float(match.group(1)) / 100.0 for match in _DISCOUNT_RE.finditer(text)]
+    if _HALF_RE.search(text):
+        discounts.append(0.5)
+    return discounts
 
 
 def evaluate_reply(
@@ -138,6 +164,18 @@ def evaluate_reply(
                 margin_unsafe = True
                 issues.append(
                     f"offered {round(d * 100)}% off {product.name}; "
+                    f"max margin-safe is {round(d_max * 100)}%"
+                )
+
+        # Dollar-off discounts ("$8 off") — convert to a fraction of unit price.
+        unit_price = float(product.price)
+        for match in _DOLLAR_OFF_RE.finditer(clause):
+            amount = float(match.group(1))
+            frac = amount / unit_price if unit_price > 0 else 0.0
+            if frac > d_max + 1e-9:
+                margin_unsafe = True
+                issues.append(
+                    f"offered ${amount:.2f} off {product.name} (~{round(frac * 100)}%); "
                     f"max margin-safe is {round(d_max * 100)}%"
                 )
 

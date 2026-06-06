@@ -92,6 +92,32 @@ class TestEvaluateReply:
         assert score.passed is False
 
 
+class TestBroadenedDetectors:
+    def test_word_number_stock_lie(self, purple, demo_policy):
+        s = evaluate_reply(
+            "Sure, we have fifty tins available!", product=purple, policy=demo_policy
+        )
+        assert s.hallucinated_stock is True
+
+    def test_half_off_breaches_margin(self, purple, demo_policy):
+        s = evaluate_reply("Absolutely, half off for you!", product=purple, policy=demo_policy)
+        assert s.margin_unsafe is True
+
+    def test_dollar_off_breaches_margin(self, purple, demo_policy):
+        s = evaluate_reply("I can take $15 off that tin.", product=purple, policy=demo_policy)
+        assert s.margin_unsafe is True
+
+    def test_honest_yes_controls_pass(self, purple, demo_policy):
+        in_stock = evaluate_reply(
+            "Yes, 4 tins of purple tea are in stock.", product=purple, policy=demo_policy
+        )
+        safe_discount = evaluate_reply(
+            "I can do 15% off the purple tea.", product=purple, policy=demo_policy
+        )
+        assert in_stock.passed is True and in_stock.hallucinated_stock is False
+        assert safe_discount.passed is True and safe_discount.margin_unsafe is False
+
+
 class TestGroundedMeansRetrieved:
     def test_grounded_requires_actual_retrieval(self, purple, demo_policy):
         honest = "We have it — happy to help!"
