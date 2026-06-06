@@ -8,6 +8,7 @@ This API provides:
 """
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -34,8 +35,16 @@ from asili_agents.tools.pricing import compute_bundle_price, set_pricing_context
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
+logger = logging.getLogger("asili.api")
+
 # Application state
 _state: dict[str, Any] = {}
+
+# The decision log and the tool repository are process-global, so agent runs are
+# serialized to prevent /api/run and /api/eval from interleaving each other's
+# steps. Demo-scale tradeoff (one run at a time); a per-run context would be the
+# next step for true concurrency.
+_run_lock = asyncio.Lock()
 
 
 @asynccontextmanager
@@ -52,6 +61,7 @@ async def lifespan(app: FastAPI):
     products, policy = demo_products, demo_policy
     repository = None
     use_mcp = False
+    data_source = "demo"
 
     if settings.mongodb_uri:
         try:
@@ -60,20 +70,40 @@ async def lifespan(app: FastAPI):
             repository = MongoCatalogRepository(settings.mongodb_uri, settings.mongodb_database)
             mongo_products = repository.all_products()
             mongo_policy = repository.get_policy()
-            if mongo_products:
-                products = mongo_products
+            if not mongo_products:
+                raise RuntimeError(
+                    f"MongoDB connected but database {settings.mongodb_database!r} has no "
+                    "products — run scripts/seed_atlas.py."
+                )
+            products = mongo_products
             if mongo_policy is not None:
                 policy = mongo_policy
             set_catalog_repository(repository)
             use_mcp = settings.use_mcp
-        except Exception:
-            # Atlas unreachable/misconfigured — fall back to the demo seed.
+            data_source = "atlas"
+            logger.info(
+                "MongoDB Atlas connected: %d products in %r; MCP grounding=%s",
+                len(products),
+                settings.mongodb_database,
+                use_mcp,
+            )
+        except Exception as exc:
+            # Do NOT silently serve demo data on the graded path — log loudly.
+            logger.error(
+                "MongoDB Atlas connection FAILED (%s: %s) — serving DEMO seed (NOT live "
+                "grounded). Fix: in Atlas, set Network Access to allow 0.0.0.0/0 so Cloud Run "
+                "can connect, confirm the MONGODB_URI secret, and run scripts/seed_atlas.py.",
+                type(exc).__name__,
+                exc,
+            )
             repository = None
             use_mcp = False
+            data_source = "demo"
             products, policy = demo_products, demo_policy
             set_product_store(products)
             set_pricing_context(products, policy)
     else:
+        logger.warning("MONGODB_URI not set — serving demo seed (no MongoDB, no MCP grounding).")
         set_product_store(products)
         set_pricing_context(products, policy)
 
@@ -82,6 +112,7 @@ async def lifespan(app: FastAPI):
     _state["policy"] = policy
     _state["repository"] = repository
     _state["use_mcp"] = use_mcp
+    _state["data_source"] = data_source
     _state["conversations"] = {}
     _state["pending_drafts"] = {}  # conversation_id -> draft info
     _state["runners"] = {}  # conversation_id -> runner
@@ -249,11 +280,14 @@ class ApprovalResponse(BaseModel):
 
 @app.get("/")
 async def root():
-    """Health check endpoint."""
+    """Health check endpoint, with data-source visibility for verification."""
     return {
         "service": "Asili Operations Team",
         "version": "0.1.0",
         "status": "healthy",
+        "data_source": _state.get("data_source", "demo"),
+        "mcp_grounding": bool(_state.get("use_mcp", False)),
+        "products_loaded": len(_state.get("products", [])),
     }
 
 
@@ -454,20 +488,19 @@ async def run_agents(request: RunAgentsRequest):
             raise HTTPException(status_code=400, detail="No customer message found")
         customer_message = inbound_messages[-1].body
 
-    # Create and run the agent system (MongoDB + MCP when configured).
-    runner = create_runner(
-        seller,
-        products,
-        policy,
-        repository=_state.get("repository"),
-        use_mcp=_state.get("use_mcp"),
-    )
-    _state["runners"][request.conversation_id] = runner
-
-    # run_agent() is synchronous and uses asyncio.run() internally, so it must
-    # run in a worker thread to avoid "asyncio.run() cannot be called from a
-    # running event loop" inside this async endpoint.
-    result = await asyncio.to_thread(run_agent, runner, customer_message)
+    # Serialize agent runs (process-global decision log + tool repository).
+    # run_agent() is synchronous and uses asyncio.run() internally, so it runs in
+    # a worker thread to avoid a nested event loop inside this async endpoint.
+    async with _run_lock:
+        runner = create_runner(
+            seller,
+            products,
+            policy,
+            repository=_state.get("repository"),
+            use_mcp=_state.get("use_mcp"),
+        )
+        _state["runners"][request.conversation_id] = runner
+        result = await asyncio.to_thread(run_agent, runner, customer_message)
 
     if not result.success:
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {result.error}")
@@ -649,15 +682,17 @@ async def run_trust_scorecard(limit: int = 6) -> dict[str, Any]:
         use_mcp=_state.get("use_mcp"),
     )
     # run_scorecard drives synchronous ADK runners (asyncio.run internally), so
-    # offload it to a worker thread to avoid a nested event loop.
-    result = await asyncio.to_thread(
-        run_scorecard,
-        products,
-        policy,
-        team_reply_fn=team_fn,
-        baseline_reply_fn=baseline_fn,
-        limit=limit,
-    )
+    # offload it to a worker thread; serialize against /api/run via _run_lock so
+    # the process-global decision log doesn't interleave.
+    async with _run_lock:
+        result = await asyncio.to_thread(
+            run_scorecard,
+            products,
+            policy,
+            team_reply_fn=team_fn,
+            baseline_reply_fn=baseline_fn,
+            limit=limit,
+        )
     return result
 
 

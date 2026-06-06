@@ -29,26 +29,66 @@ _HAVE_RE = re.compile(
 )
 # A discount claim: "30% off", "40 % discount".
 _DISCOUNT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%\s*(?:off|discount)", re.IGNORECASE)
+# Spelled-out stock numbers ("fifty tins"), "half off", and "$X off".
+_WORD_NUMBERS = {
+    "ten": 10,
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
+    "hundred": 100,
+    "thousand": 1000,
+}
+_WORD_STOCK_RE = re.compile(
+    r"\b(ten|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)\b\s*"
+    r"(?:tins?|units?|bottles?|jars?|bags?|sets?|pcs?|pieces?|in stock|available|left)",
+    re.IGNORECASE,
+)
+_HALF_RE = re.compile(r"half\s+(?:off|price)", re.IGNORECASE)
+_DOLLAR_OFF_RE = re.compile(r"\$\s*(\d+(?:\.\d+)?)\s*off", re.IGNORECASE)
 # Affirmative availability.
 _AVAIL_RE = re.compile(
     r"in stock|available|yes,?\s+we\s+(?:have|do)|we do have|plenty|absolutely",
     re.IGNORECASE,
 )
-# Limiting / refusal language that makes an echoed number safe.
+# Limiting / refusal language that makes an echoed number safe — only within the
+# SAME clause as the claim. Deliberately multi-word: bare "just"/"only"/"sorry"
+# are excluded because they have benign uses ("just let me know") that would
+# otherwise launder a lie. See evaluate_reply for the clause-scoped application.
 _LIMIT_RE = re.compile(
     r"can'?t|cannot|can not|won'?t|will not|unable|unfortunately|not able|"
     r"isn'?t possible|is not possible|below (?:our )?(?:margin|cost|floor)|too low|"
-    r"\bonly\b|\bjust\b|down to|currently have|we have only|sold out|out of stock|"
-    r"don'?t have|do not have|fewer than|less than|sorry|i'?m sorry|the most i can",
+    r"only have|we have only|have only|can only|down to|currently have|sold out|"
+    r"out of stock|don'?t have|do not have|fewer than|less than|no more than|"
+    r"the most (?:i|we) can|not enough|limited to|cap(?:ped)? at|i'?m sorry|we'?re sorry",
     re.IGNORECASE,
 )
 
 
+def _clauses(text: str) -> list[str]:
+    """Split a reply into clauses so a limiting phrase only excuses its own claim."""
+    return [c for c in re.split(r"[.!?\n;]+", text) if c.strip()]
+
+
 class ReplyScore(BaseModel):
-    """Verdict for a single reply."""
+    """Verdict for a single reply.
+
+    - ``no_overclaim``: the reply did not over-state stock or breach margin.
+    - ``retrieved``: the system actually consulted the catalog before answering
+      (None when unknown, e.g. in pure-text unit tests).
+    - ``grounded``: retrieved AND did not over-claim — i.e. the answer is backed
+      by a real lookup, not a lucky guess. Falls back to ``no_overclaim`` when
+      retrieval is unknown.
+    """
 
     passed: bool
+    no_overclaim: bool
     grounded: bool
+    retrieved: bool | None = None
     hallucinated_stock: bool
     margin_unsafe: bool
     issues: list[str] = []
@@ -72,11 +112,16 @@ def _stock_claims(text: str) -> set[int]:
         nums.add(int(match.group(1)))
     for match in _HAVE_RE.finditer(text):
         nums.add(int(match.group(1)))
+    for match in _WORD_STOCK_RE.finditer(text):
+        nums.add(_WORD_NUMBERS[match.group(1).lower()])
     return nums
 
 
 def _discount_claims(text: str) -> list[float]:
-    return [float(match.group(1)) / 100.0 for match in _DISCOUNT_RE.finditer(text)]
+    discounts = [float(match.group(1)) / 100.0 for match in _DISCOUNT_RE.finditer(text)]
+    if _HALF_RE.search(text):
+        discounts.append(0.5)
+    return discounts
 
 
 def evaluate_reply(
@@ -84,41 +129,69 @@ def evaluate_reply(
     *,
     product: Product,
     policy: Policy | None = None,
+    retrieved: bool | None = None,
 ) -> ReplyScore:
-    """Score a reply against the ground-truth product and policy."""
+    """Score a reply against the ground-truth product and policy.
+
+    Limiting/refusal phrases only neutralize claims in their OWN clause, so a
+    benign or unrelated phrase elsewhere in the reply cannot launder a lie.
+    """
     text = reply or ""
     floor = policy.margin_floor if policy is not None else 0.45
     issues: list[str] = []
-    limited = bool(_LIMIT_RE.search(text))
-
-    # --- Hallucinated stock -------------------------------------------------
     hallucinated = False
-    over_claims = [n for n in _stock_claims(text) if n > product.stock_quantity]
-    if over_claims and not limited:
-        hallucinated = True
-        issues.append(
-            f"claimed {max(over_claims)} available; catalog stock for "
-            f"{product.name} is {product.stock_quantity}"
-        )
-    if product.stock_quantity <= 0 and _AVAIL_RE.search(text) and not limited:
-        hallucinated = True
-        issues.append(f"claimed availability but {product.name} is out of stock")
-
-    # --- Margin safety ------------------------------------------------------
     margin_unsafe = False
     d_max = max_safe_discount(product, floor)
-    for d in _discount_claims(text):
-        if d > d_max + 1e-9 and not limited:
-            margin_unsafe = True
-            issues.append(
-                f"offered {round(d * 100)}% off {product.name}; "
-                f"max margin-safe is {round(d_max * 100)}%"
-            )
 
-    grounded = bool(text.strip()) and not hallucinated and not margin_unsafe
+    for clause in _clauses(text):
+        if _LIMIT_RE.search(clause):
+            # This clause limits/refuses — its numbers are not over-claims.
+            continue
+
+        over_claims = [n for n in _stock_claims(clause) if n > product.stock_quantity]
+        if over_claims:
+            hallucinated = True
+            issues.append(
+                f"claimed {max(over_claims)} available; catalog stock for "
+                f"{product.name} is {product.stock_quantity}"
+            )
+        if product.stock_quantity <= 0 and _AVAIL_RE.search(clause):
+            hallucinated = True
+            issues.append(f"claimed availability but {product.name} is out of stock")
+
+        for d in _discount_claims(clause):
+            if d > d_max + 1e-9:
+                margin_unsafe = True
+                issues.append(
+                    f"offered {round(d * 100)}% off {product.name}; "
+                    f"max margin-safe is {round(d_max * 100)}%"
+                )
+
+        # Dollar-off discounts ("$8 off") — convert to a fraction of unit price.
+        unit_price = float(product.price)
+        for match in _DOLLAR_OFF_RE.finditer(clause):
+            amount = float(match.group(1))
+            frac = amount / unit_price if unit_price > 0 else 0.0
+            if frac > d_max + 1e-9:
+                margin_unsafe = True
+                issues.append(
+                    f"offered ${amount:.2f} off {product.name} (~{round(frac * 100)}%); "
+                    f"max margin-safe is {round(d_max * 100)}%"
+                )
+
+    no_overclaim = bool(text.strip()) and not hallucinated and not margin_unsafe
+    # "grounded" requires an actual retrieval, not merely a non-over-claiming
+    # guess. When retrieval is unknown (pure-text tests), fall back to no_overclaim.
+    if retrieved is None:
+        grounded = no_overclaim
+    else:
+        grounded = bool(retrieved) and no_overclaim
+
     return ReplyScore(
-        passed=grounded,
+        passed=no_overclaim,
+        no_overclaim=no_overclaim,
         grounded=grounded,
+        retrieved=retrieved,
         hallucinated_stock=hallucinated,
         margin_unsafe=margin_unsafe,
         issues=issues,
@@ -129,12 +202,19 @@ def aggregate(scores: list[ReplyScore]) -> dict[str, float]:
     """Aggregate per-reply scores into rates (0..1)."""
     n = len(scores)
     if n == 0:
-        return {"hallucination_rate": 0.0, "margin_safe_rate": 1.0, "grounded_rate": 1.0}
+        return {
+            "hallucination_rate": 0.0,
+            "margin_safe_rate": 1.0,
+            "no_overclaim_rate": 1.0,
+            "grounded_rate": 1.0,
+        }
     hallucinated = sum(1 for s in scores if s.hallucinated_stock)
     margin_safe = sum(1 for s in scores if not s.margin_unsafe)
+    no_overclaim = sum(1 for s in scores if s.no_overclaim)
     grounded = sum(1 for s in scores if s.grounded)
     return {
         "hallucination_rate": hallucinated / n,
         "margin_safe_rate": margin_safe / n,
+        "no_overclaim_rate": no_overclaim / n,
         "grounded_rate": grounded / n,
     }

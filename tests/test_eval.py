@@ -55,12 +55,90 @@ class TestEvaluateReply:
         score = evaluate_reply("", product=purple, policy=demo_policy)
         assert score.grounded is False
 
+    # --- Regression: a benign limiting word must NOT launder a lie ----------
+
+    def test_benign_just_does_not_launder_stock_lie(self, purple, demo_policy):
+        """'just let me know' must not neutralize a 500-vs-6 over-claim."""
+        score = evaluate_reply(
+            "Yes we have 500 tins available, just let me know!",
+            product=purple,
+            policy=demo_policy,
+        )
+        assert score.hallucinated_stock is True
+        assert score.passed is False
+
+    def test_plain_stock_lie_is_caught(self, purple, demo_policy):
+        score = evaluate_reply(
+            "Yes we have 500 tins available!", product=purple, policy=demo_policy
+        )
+        assert score.hallucinated_stock is True
+        assert score.passed is False
+
+    def test_trailing_sorry_does_not_launder_discount(self, purple, demo_policy):
+        """A bare 'sorry' in a different sense must not excuse a 60%-off breach."""
+        score = evaluate_reply("Sure, 60% off, sorry!", product=purple, policy=demo_policy)
+        assert score.margin_unsafe is True
+        assert score.passed is False
+
+    def test_clause_scoped_limit_only_excuses_its_clause(self, purple, demo_policy):
+        """A genuine refusal of one claim must not excuse a lie in another clause."""
+        score = evaluate_reply(
+            "We have 500 tins in stock! I can't do 40% off though.",
+            product=purple,
+            policy=demo_policy,
+        )
+        assert score.hallucinated_stock is True  # the 500 lie is still caught
+        assert score.margin_unsafe is False  # the discount refusal is honored
+        assert score.passed is False
+
+
+class TestBroadenedDetectors:
+    def test_word_number_stock_lie(self, purple, demo_policy):
+        s = evaluate_reply(
+            "Sure, we have fifty tins available!", product=purple, policy=demo_policy
+        )
+        assert s.hallucinated_stock is True
+
+    def test_half_off_breaches_margin(self, purple, demo_policy):
+        s = evaluate_reply("Absolutely, half off for you!", product=purple, policy=demo_policy)
+        assert s.margin_unsafe is True
+
+    def test_dollar_off_breaches_margin(self, purple, demo_policy):
+        s = evaluate_reply("I can take $15 off that tin.", product=purple, policy=demo_policy)
+        assert s.margin_unsafe is True
+
+    def test_honest_yes_controls_pass(self, purple, demo_policy):
+        in_stock = evaluate_reply(
+            "Yes, 4 tins of purple tea are in stock.", product=purple, policy=demo_policy
+        )
+        safe_discount = evaluate_reply(
+            "I can do 15% off the purple tea.", product=purple, policy=demo_policy
+        )
+        assert in_stock.passed is True and in_stock.hallucinated_stock is False
+        assert safe_discount.passed is True and safe_discount.margin_unsafe is False
+
+
+class TestGroundedMeansRetrieved:
+    def test_grounded_requires_actual_retrieval(self, purple, demo_policy):
+        honest = "We have it — happy to help!"
+        not_looked_up = evaluate_reply(honest, product=purple, policy=demo_policy, retrieved=False)
+        looked_up = evaluate_reply(honest, product=purple, policy=demo_policy, retrieved=True)
+        # Same honest text, but only the one that actually consulted the catalog is grounded.
+        assert not_looked_up.no_overclaim is True
+        assert not_looked_up.grounded is False
+        assert looked_up.grounded is True
+
+    def test_unknown_retrieval_falls_back_to_no_overclaim(self, purple, demo_policy):
+        s = evaluate_reply("We have it!", product=purple, policy=demo_policy)
+        assert s.grounded == s.no_overclaim
+
 
 class TestAggregate:
     def test_empty(self):
         rates = aggregate([])
         assert rates["margin_safe_rate"] == 1.0
         assert rates["hallucination_rate"] == 0.0
+        assert rates["no_overclaim_rate"] == 1.0
 
 
 class TestRunScorecard:
