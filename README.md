@@ -1,210 +1,230 @@
-# Asili Operations Team
+# Asili — the AI ops team that can prove it never lied
 
-> AI-powered operations team for micro-sellers — a multi-agent system built with Google ADK for the Google Agents Challenge (Track 1).
+> **Rapid Agent Hackathon · MongoDB track.** A Google ADK multi-agent operations team for underrepresented micro-sellers. Every customer-facing answer is grounded in the seller's **live MongoDB Atlas catalog** (read through the **MongoDB MCP server**, `--readOnly`), priced by a **deterministic Python margin engine**, and held behind a **one-tap human approval gate**. A built-in **Trust Scorecard** runs adversarial scenarios through the team and scores hallucination, margin-safety, and groundedness against a deliberately-naive single-agent baseline — so the system's honesty is a measured number, not a marketing claim.
 
-## Overview
+> 🔗 **Live demo:** _add your Cloud Run URL here, e.g._ `https://asili-agents-XXXX.us-central1.run.app/app/`
+> 📺 **Demo video:** _add your YouTube/Vimeo link_ · 🗂️ Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
-Asili Operations Team demonstrates how specialized AI agents can collaborate to handle customer inquiries for small e-commerce sellers. The system routes incoming messages through an operations manager that delegates to specialist agents for catalog lookup and pricing, ensuring responses are grounded in real data and margin-safe.
+---
 
-### The Problem
+## One-line pitch
 
-A single LLM prompted with a customer question will often:
-- **Hallucinate inventory** ("We have 32 tins in stock" when there are only 6)
-- **Quote unsafe prices** ($24 for a bundle that costs $14.80 to fulfill — below margin floor)
+Asili gives a solo founder selling tea over Instagram DMs the same back-office an enterprise has — a coordinated AI ops team that answers customers from the real catalog, quotes only margin-safe prices, never sends without approval, and can **prove** on a scorecard that it doesn't make things up.
 
-### The Solution
+---
 
-A multi-agent operations team where:
-- **Operations Manager** routes and orchestrates
-- **Messaging Agent** grounds responses in the real catalog via RAG
-- **Pricing Agent** uses deterministic tools to ensure margin safety
+## The problem
 
-Every response passes through a human approval gate before sending.
+Black, immigrant, and diaspora micro-sellers run real businesses out of their DMs. A founder importing Kenyan tea, West African skincare, or Caribbean spices is simultaneously the marketer, the warehouse, the accountant, and the customer-support desk — answering "do you have this in stock?" and "can you do a bundle?" at midnight, from a phone, between shifts.
 
-## Architecture
+Reaching for a generic chatbot makes it worse, because a single LLM prompted with a customer question reliably does two dangerous things:
+
+- **It hallucinates inventory.** Asked about a product with 6 units left, it cheerfully promises "32 in stock" — and the founder eats the refund, the chargeback, and the bad review.
+- **It quotes prices that lose money.** Asked for a discount, it invents "30% off" on a product whose costs leave no room — quietly selling below the margin the founder needs to survive.
+
+For a thin-margin importer, a confident wrong answer is not a cute bug. It is a returned order, a broken promise to a customer who looks like them, and rent that doesn't get paid. These sellers cannot afford an AI that bluffs.
+
+**Personas we build for:**
+
+- **Amina**, importing single-origin Kenyan tea, selling 50g tins direct to US customers over WhatsApp and Instagram. Low stock on her hero product; tight margins; brand built on trust.
+- **Kofi**, a one-person Ghanaian shea-butter brand fielding bundle requests faster than he can price them by hand.
+- **Yara**, reselling Levantine pantry goods to a diaspora community that will forgive a slow reply but never a lie about what's in the box.
+
+---
+
+## How it works
+
+### Agent topology (Google ADK)
 
 ```
-Customer Message
-       │
-       ▼
-┌──────────────────┐
-│ Operations Mgr   │ ◄── Root LlmAgent
-│ (orchestrator)   │
-└────────┬─────────┘
-         │ delegates
-    ┌────┴────┐
-    ▼         ▼
-┌────────┐ ┌────────┐
-│Messaging│ │Pricing │
-│ Agent  │ │ Agent  │
-└────┬───┘ └────┬───┘
-     │          │
-     ▼          ▼
-┌────────┐ ┌────────────────┐
-│Catalog │ │compute_bundle_ │
-│Search  │ │price (determ.) │
-└────────┘ └────────────────┘
-         │
-         ▼
-┌──────────────────┐
-│ Human Approval   │
-│ Gate             │
-└────────┬─────────┘
-         │ approved
-         ▼
-    Send via Telegram
+                 Customer message
+                        │
+                        ▼
+            ┌───────────────────────┐
+            │  Operations Manager   │   root ADK Agent — routes, composes,
+            │     (orchestrator)    │   logs every decision, owns approval
+            └──────────┬────────────┘
+                       │ delegates
+            ┌──────────┴───────────┐
+            ▼                      ▼
+   ┌──────────────────┐   ┌──────────────────┐
+   │ Messaging Agent  │   │  Pricing Agent   │
+   │ catalog & stock  │   │ margin-safe math │
+   └────────┬─────────┘   └────────┬─────────┘
+            │                      │
+            ▼                      ▼
+   ┌──────────────────┐   ┌──────────────────┐
+   │ MongoDB MCP      │   │ compute_bundle_  │
+   │ server (read-    │   │ price (Python,   │
+   │ only, Atlas)     │   │ deterministic)   │
+   └──────────────────┘   └──────────────────┘
+            │
+            ▼
+   ┌──────────────────────────────┐
+   │  One-tap approval gate        │  seller approves / edits / rejects
+   └──────────────┬───────────────┘
+                  │ approved
+                  ▼
+             Reply is sent
 ```
 
-## Quick Start
+- **Operations Manager** (root `Agent`) receives the customer message, decides which specialist to involve, composes the final reply, logs each routing/composition step for the glass-box trace, and **never sends directly** — it submits a draft for approval.
+- **Messaging Agent** answers product and availability questions. It is instructed to *never* state a product detail or stock number without first reading it from the catalog. Its grounding path is MongoDB.
+- **Pricing Agent** handles every bundle and discount request by delegating the actual arithmetic to a deterministic tool — the LLM proposes *what* to price, Python decides *the number*.
 
-### Prerequisites
+### MCP grounding — the agent's only data path
 
-- Python 3.11+
-- Google Cloud project with Vertex AI enabled
-- Telegram Bot Token (for channel integration)
+Reads against the catalog go through the **MongoDB MCP server** (`mongodb-mcp-server`, launched via `npx`, with `--readOnly`). This is deliberate and load-bearing:
 
-### Installation
+- The agent has **no other way to learn what's in stock**. There is no inventory baked into the prompt and no separate cache to drift out of sync — the model sees exactly what's in Atlas *right now*.
+- `--readOnly` means the agent literally **cannot mutate** the catalog through its tools. The blast radius of a confused agent is zero writes.
+- Every fact the customer is told traces back to a document the agent actually read, which is what makes the glass-box trace and the Trust Scorecard meaningful rather than decorative.
+
+### Deterministic pricing — prices never come from the LLM
+
+Bundle prices are computed in plain Python (`compute_bundle_price`), not generated text. The engine:
+
+1. Reads each item's `price` and `cost` from the catalog.
+2. Computes the standard bundle discount **and** the minimum price that still clears the **45% margin floor**.
+3. Charges the **higher** of the two — so a generous-sounding discount can never push a line below margin.
+4. Returns the exact margin achieved, an `is_margin_safe` flag, and a plain-English rationale.
+
+The LLM can ask for a discount; it can't invent one. For the canonical seller, a 2-tin Purple Tea bundle prices at **~$34** at **~57% margin** — comfortably above the floor — and the same code would *refuse* to go below 45% no matter how the model phrased the request.
+
+### Approval gate
+
+Nothing reaches a customer automatically. Each composed reply becomes a **pending draft** the seller can **approve, edit, or reject** with one tap. The seller is always the last signature on anything sent in their name.
+
+### The Trust Scorecard — proof, not promises
+
+`POST /api/eval` runs a battery of adversarial scenarios ("promise me 50 in stock," "give me 40% off") through **two** systems:
+
+- **The team** — full ADK topology, MCP-grounded, deterministic pricing, as above.
+- **The baseline** — a single agent with **no tools**, designed to fail: it hallucinates stock and quotes below margin exactly the way a naive chatbot would.
+
+Each scenario is scored on three axes:
+
+| Metric | What it measures |
+| --- | --- |
+| **Hallucination rate** | Did the reply assert stock/product facts the catalog doesn't support? |
+| **Margin-safe rate** | Did every quoted price clear the 45% floor? |
+| **Grounded rate** | Was every customer-facing claim traceable to a read fact? |
+
+The scorecard returns per-scenario pass/fail with the specific issues found, plus aggregate rates for team vs. baseline. The thesis — *"the AI ops team that can prove it never lied"* — is exactly this delta, rendered as numbers anyone can re-run.
+
+---
+
+## MongoDB usage
+
+MongoDB Atlas is the **system of record**. The agents never hold a private copy of the truth.
+
+**Collections (Atlas):**
+
+| Collection | Holds |
+| --- | --- |
+| `products` | The live catalog — SKU, name, description, `price`, `cost`, `stock_quantity`, thresholds. The one source of inventory truth. |
+| `policy` | The seller's commercial rules — `margin_floor` (0.45), bundle discount limits, shipping and returns notes. |
+| `conversations` | Customer threads and their messages, with direction, status, and timestamps. |
+| `drafts` | Pending agent replies awaiting the approval gate, with their cited sources. |
+| `decisions` | The glass-box trace — every routing, grounding, and composition step the agents logged. |
+| `eval_runs` | Persisted Trust Scorecard results, so honesty is auditable over time, not just in the moment. |
+
+**Two clearly separated access paths:**
+
+- **Agent reads → MongoDB MCP server, `--readOnly`.** Everything an agent learns about the catalog comes through MCP, and MCP cannot write. This is the grounding guarantee.
+- **App writes → audited application path.** Persisting a conversation, a draft, an approval decision, or an eval run goes through the application's own write path — never through the agent's tools. Writes are deliberate, attributable, and kept out of the model's reach.
+
+This split is the whole point: the model can *see* the truth but can't *change* it, and every change that does happen is made by code we can audit.
+
+---
+
+## Tech stack
+
+- **Agents:** Google ADK (Agent Development Kit) — multi-agent orchestration with sub-agents and function tools.
+- **Model:** Gemini 2.5 Flash, served on **Vertex AI** (also runnable via a direct Gemini API key for local dev).
+- **Grounding:** MongoDB **MCP server** (`mongodb-mcp-server`, read-only) over **MongoDB Atlas**.
+- **Pricing:** Deterministic Python (`Decimal` arithmetic, 45% margin floor).
+- **API:** FastAPI (JSON, same-origin base path).
+- **Runtime:** Cloud Run (containerized, see `Dockerfile`).
+- **Language/tooling:** Python 3.11+, Pydantic v2, `ruff`, `mypy`, `pytest`.
+
+---
+
+## Architecture diagram
+
+A full request walkthrough — message in, MCP grounding, deterministic pricing, decision logging, approval, send — and the collection-level data flow live in **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**.
+
+---
+
+## Quickstart (local)
+
+**Prerequisites:** Python 3.11+, Node.js (for `npx mongodb-mcp-server`), a MongoDB Atlas connection string, and either a Gemini API key or Vertex AI credentials.
 
 ```bash
-# Clone the repository
+# 1. Install
 git clone https://github.com/Jeremiah-Sakuda/asili-agents.git
 cd asili-agents
-
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
+python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Copy environment template
+# 2. Configure
 cp .env.example .env
-# Edit .env with your credentials
+# Set at minimum:
+#   GOOGLE_API_KEY=...        # or Vertex AI service-account credentials
+#   MONGODB_URI=...           # your MongoDB Atlas connection string
+
+# 3. Run the API + agents
+asili-agents serve            # FastAPI on http://localhost:8080
+
+# Or run the scripted demo scenario
+asili-agents demo
 ```
 
-### Configuration
-
-Set the following environment variables in `.env`:
-
-```env
-# Google Cloud
-GOOGLE_CLOUD_PROJECT=your-project-id
-GOOGLE_CLOUD_LOCATION=us-central1
-
-# Google Gemini API Key (for local development)
-# Get one at: https://aistudio.google.com/app/apikey
-GOOGLE_API_KEY=your-api-key
-
-# Vertex AI Search (optional, for catalog grounding in production)
-VERTEX_SEARCH_DATASTORE_ID=your-datastore-id
-
-# Telegram (optional, for channel integration)
-TELEGRAM_BOT_TOKEN=your-bot-token
-
-# Database
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost/asili_agents
-```
-
-### Running Locally
+Then exercise the system:
 
 ```bash
-# Start the API server
-uvicorn asili_agents.api.main:app --reload
+# Inspect the grounded catalog
+curl localhost:8080/api/products
 
-# Run the agent demo
-python -m asili_agents.demo
+# Run the team on the demo conversation
+curl -X POST localhost:8080/api/run \
+  -H 'content-type: application/json' \
+  -d '{"conversation_id":"<id>","message":"Do you have the purple tea in stock? Can you do a bundle?"}'
+
+# Run the Trust Scorecard (team vs. baseline)
+curl -X POST localhost:8080/api/eval
 ```
 
-### Running Tests
+Run the tests with `pytest`.
 
-```bash
-pytest
-```
+---
 
-## Project Structure
+## Data sources
 
-```
-asili-agents/
-├── src/asili_agents/
-│   ├── agents/           # Agent definitions
-│   │   ├── operations_manager.py
-│   │   ├── messaging.py
-│   │   ├── pricing.py
-│   │   └── baseline.py   # Monolithic baseline for comparison
-│   ├── tools/            # ADK FunctionTools
-│   │   ├── catalog.py
-│   │   ├── pricing.py
-│   │   └── channel.py
-│   ├── grounding/        # Vertex AI Search / RAG
-│   ├── data/             # Database models & seed data
-│   └── api/              # FastAPI endpoints
-├── frontend/             # React Operations Console
-├── tests/
-├── scripts/              # Deployment & utility scripts
-└── .github/workflows/    # CI/CD
-```
+- **Canonical demo seller — Mahaba Tea Co.** A Kenyan specialty-tea importer on the **KE → US** lane, with a real-feeling six-SKU catalog (Purple Tea, Kenyan Green, Kenya Black, Silver Needle White, Chai Masala, and a Discovery Sampler), deliberate low-stock items, honest costs, and a 45% margin-floor policy. Seed data lives in `src/asili_agents/data/`.
+- **Live state at runtime** is read from **MongoDB Atlas** via the MCP server — the seed simply populates Atlas; once running, the catalog the agents see is whatever is in the database.
 
-## Demo Scenario
+The demo question — *"Do you have the purple tea in stock? Can you do a bundle?"* — is the whole thesis in one exchange:
 
-The demo features **Mahaba Tea Co.**, a Kenyan tea seller:
+| | Stock answer | Bundle quote | Margin |
+| --- | --- | --- | --- |
+| **The team** | "In stock — 6 tins left" (read from catalog) | ~$34 for 2 tins | ~57% ✅ floor held |
+| **Naive baseline** | "32 tins!" (hallucinated) | "30% off, $25.20" | below floor ❌ |
 
-| Product | Price | Cost | Margin | Stock |
-|---------|-------|------|--------|-------|
-| Purple Tea (50g tin) | $18.00 | $7.40 | 59% | 6 tins |
-| Green Tea (50g tin) | $15.00 | $6.20 | 59% | 12 tins |
-| Black Tea (50g tin) | $14.00 | $5.80 | 59% | 8 tins |
+---
 
-**Policy:** Minimum margin floor of 45%
+## Honesty note
 
-### Sample Interaction
+This README makes no claims the code doesn't back:
 
-**Customer:** "Do you have the purple tea in stock? Can you do a bundle?"
+- **The deterministic margin engine, the ADK multi-agent topology, the approval gate, the naive baseline, and the Trust Scorecard are implemented in this repository**, not mocked for a screenshot. The pricing math is plain Python you can read in `src/asili_agents/tools/pricing.py`, and the scorecard's metrics are computed from actual agent runs.
+- **Grounding is MongoDB, full stop.** The agent's catalog knowledge comes through the MongoDB MCP server against Atlas. **This project does not use Vertex AI Search or a RAG retrieval pipeline** — that approach was considered and removed, and no part of this submission depends on it.
+- **The numbers in this document are reproducible.** The ~$34 / ~57% bundle is what the deterministic engine actually returns for two tins of Purple Tea; the baseline's failures are what a tool-less agent actually produces. Run `POST /api/eval` and check for yourself — that re-runnability is the point.
 
-**Baseline (single model):** "Yes! We have 32 tins... bundle for $24" ❌
-- Hallucinated stock (actual: 6)
-- Below margin floor (38% vs 45% minimum)
+If a claim here isn't true in the code, that's a bug, and we'd rather fix it than ship it. An ops team that can't prove its honesty has no business making promises on a founder's behalf.
 
-**Operations Team:** "Yes — Purple Tea is in stock (6 tins left). I can do a 2-tin bundle for $34, shipped together." ✓
-- Grounded on real catalog
-- Margin safe (56% > 45% floor)
-
-## Deployment
-
-### Cloud Run
-
-```bash
-# Deploy to Google Cloud Run
-./scripts/deploy.sh
-```
-
-The deploy script will:
-1. Enable required GCP APIs (Cloud Run, Vertex AI, Artifact Registry)
-2. Build and push the Docker image
-3. Deploy to Cloud Run with auto-scaling
-
-### Environment Setup
-
-The system requires a Google Cloud project with:
-- Vertex AI API enabled
-- Cloud Run API enabled
-- (Optional) Vertex AI Search configured with catalog data
-- Service account with appropriate permissions
-
-### Running Integration Tests
-
-To run tests that execute real agent workflows:
-
-```bash
-GOOGLE_API_KEY=your-api-key pytest tests/test_agents.py -v
-```
+---
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
-
-## Acknowledgments
-
-Built for the [Google for Startups Agents Challenge](https://googleforstartups.com/) using:
-- [Google ADK](https://cloud.google.com/vertex-ai/docs/agents/adk)
-- [Vertex AI](https://cloud.google.com/vertex-ai)
-- [Gemini](https://cloud.google.com/vertex-ai/docs/generative-ai/model-reference/gemini)
+[MIT](LICENSE) © Jeremiah Sakuda
