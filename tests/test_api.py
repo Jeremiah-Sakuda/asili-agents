@@ -192,3 +192,18 @@ class TestRunEndpointEventLoop:
             json={"conversation_id": "test-conv", "message": "Do you have purple tea?"},
         )
         assert response.status_code == 200, response.text
+
+
+class TestWebUI:
+    """The phone-inbox SPA is served as same-origin static files."""
+
+    def test_app_index_served(self, client):
+        """GET /app/ returns the inbox HTML."""
+        response = client.get("/app/")
+        assert response.status_code == 200
+        assert "Asili" in response.text
+
+    def test_app_js_served(self, client):
+        """The app script is reachable for the SPA."""
+        response = client.get("/app/app.js")
+        assert response.status_code == 200

@@ -9,10 +9,12 @@ This API provides:
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from asili_agents.data.models import (
@@ -21,11 +23,14 @@ from asili_agents.data.models import (
     MessageStatus,
 )
 from asili_agents.data.seed import get_demo_seller
+from asili_agents.eval.runner import build_live_reply_fns, run_scorecard
 from asili_agents.runner import create_baseline_runner, create_runner, run_agent, run_baseline
 from asili_agents.tools.catalog import check_stock, get_costs, set_product_store
 from asili_agents.tools.channel import ApprovalResult, ApprovalStatus, set_approval_callback
 from asili_agents.tools.logging import clear_decision_log, get_decision_log
 from asili_agents.tools.pricing import compute_bundle_price, set_pricing_context
+
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 # Application state
 _state: dict[str, Any] = {}
@@ -83,6 +88,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve the phone-inbox web UI (same-origin static files) at /app/.
+if WEB_DIR.is_dir():
+    app.mount("/app", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
 
 
 # ============================================================================
@@ -574,6 +583,36 @@ async def get_pending_draft(conversation_id: str):
         "has_pending": True,
         "draft": pending,
     }
+
+
+@app.post("/api/eval")
+async def run_trust_scorecard(limit: int = 6) -> dict[str, Any]:
+    """Run the Trust Scorecard: the multi-agent team vs the naive baseline.
+
+    Runs adversarial scenarios through both systems and scores each reply for
+    hallucinated stock, margin safety, and groundedness. ``limit`` bounds how
+    many scenarios run live (each issues real Gemini calls), defaulting to 6 to
+    keep latency and token spend reasonable for an interactive demo.
+    """
+    seller = _state.get("seller")
+    products = _state.get("products", [])
+    policy = _state.get("policy")
+
+    if not seller or not policy:
+        raise HTTPException(status_code=500, detail="Demo data not initialized")
+
+    team_fn, baseline_fn = build_live_reply_fns(seller, products, policy)
+    # run_scorecard drives synchronous ADK runners (asyncio.run internally), so
+    # offload it to a worker thread to avoid a nested event loop.
+    result = await asyncio.to_thread(
+        run_scorecard,
+        products,
+        policy,
+        team_reply_fn=team_fn,
+        baseline_reply_fn=baseline_fn,
+        limit=limit,
+    )
+    return result
 
 
 def _get_grounded_facts_for_response(products: list, policy) -> list[BusinessFactResponse]:
