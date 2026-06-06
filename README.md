@@ -2,7 +2,7 @@
 
 > **Rapid Agent Hackathon · MongoDB track.** A Google ADK multi-agent operations team for underrepresented micro-sellers. Every customer-facing answer is grounded in the seller's **live MongoDB Atlas catalog** (read through the **MongoDB MCP server**, `--readOnly`), priced by a **deterministic Python margin engine**, and held behind a **one-tap human approval gate**. A built-in **Trust Scorecard** runs adversarial scenarios through the team and scores hallucination, margin-safety, and groundedness against a deliberately-naive single-agent baseline — so the system's honesty is a measured number, not a marketing claim.
 
-> 🔗 **Live demo:** _add your Cloud Run URL here, e.g._ `https://asili-agents-XXXX.us-central1.run.app/app/`
+> 🔗 **Live demo:** **https://asili-agents-u42sxjnqkq-uc.a.run.app/app/** — grounded in live MongoDB Atlas via the MongoDB MCP server (`GET /` shows `data_source: atlas`, `mcp_grounding: true`).
 > 📺 **Demo video:** _add your YouTube/Vimeo link_ · 🗂️ Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ---
