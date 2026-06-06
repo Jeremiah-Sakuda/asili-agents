@@ -60,13 +60,15 @@ class TestAgentCreation:
         assert len(agent.tools) == 0  # Intentionally no tools
 
     def test_baseline_catalog_dump(self):
-        """Catalog dump should contain product info."""
+        """Dump is a fair snapshot: product, price, cost, stock, and the margin rule."""
         _, products, _ = get_demo_seller()
         dump = generate_catalog_dump_from_products(products)
 
         assert "Purple Tea" in dump
         assert "$18.00" in dump
-        assert "Bundle Policy" in dump
+        assert "$7.40" in dump  # cost is now included so the baseline isn't starved
+        assert "stock 6" in dump  # stock is now included
+        assert "margin" in dump
 
 
 class TestRunnerCreation:

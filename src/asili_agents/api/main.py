@@ -9,6 +9,7 @@ This API provides:
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,8 @@ from asili_agents.data.models import (
     Conversation,
     MessageDirection,
     MessageStatus,
+    Policy,
+    Product,
 )
 from asili_agents.data.repository import set_catalog_repository
 from asili_agents.data.seed import get_demo_seller
@@ -48,7 +51,7 @@ _run_lock = asyncio.Lock()
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Initialize application state on startup.
 
     If ``MONGODB_URI`` is configured, the catalog/policy come from MongoDB Atlas
@@ -63,7 +66,7 @@ async def lifespan(app: FastAPI):
     use_mcp = False
     data_source = "demo"
 
-    if settings.mongodb_uri:
+    if settings.mongodb_uri and not settings.demo_mode:
         try:
             from asili_agents.data.mongo_repository import MongoCatalogRepository
 
@@ -103,7 +106,8 @@ async def lifespan(app: FastAPI):
             set_product_store(products)
             set_pricing_context(products, policy)
     else:
-        logger.warning("MONGODB_URI not set — serving demo seed (no MongoDB, no MCP grounding).")
+        reason = "DEMO_MODE is on" if settings.demo_mode else "MONGODB_URI is not set"
+        logger.info("Using in-process demo seed (%s) — no MongoDB, no MCP grounding.", reason)
         set_product_store(products)
         set_pricing_context(products, policy)
 
@@ -279,7 +283,7 @@ class ApprovalResponse(BaseModel):
 
 
 @app.get("/")
-async def root():
+async def root() -> dict[str, Any]:
     """Health check endpoint, with data-source visibility for verification."""
     return {
         "service": "Asili Operations Team",
@@ -292,7 +296,7 @@ async def root():
 
 
 @app.get("/api/seller", response_model=SellerResponse)
-async def get_seller():
+async def get_seller() -> SellerResponse:
     """Get the current seller information."""
     seller = _state.get("seller")
     if not seller:
@@ -307,7 +311,7 @@ async def get_seller():
 
 
 @app.get("/api/products", response_model=list[ProductResponse])
-async def get_products():
+async def get_products() -> list[ProductResponse]:
     """Get all products in the catalog."""
     products = _state.get("products", [])
     return [
@@ -328,7 +332,7 @@ async def get_products():
 
 
 @app.get("/api/policy", response_model=PolicyResponse)
-async def get_policy():
+async def get_policy() -> PolicyResponse:
     """Get the seller's business policy."""
     policy = _state.get("policy")
     if not policy:
@@ -343,7 +347,7 @@ async def get_policy():
 
 
 @app.get("/api/facts", response_model=list[BusinessFactResponse])
-async def get_business_facts():
+async def get_business_facts() -> list[BusinessFactResponse]:
     """Get grounded business facts for the UI."""
     products = _state.get("products", [])
     policy = _state.get("policy")
@@ -353,7 +357,7 @@ async def get_business_facts():
     # Find the Purple Tea product for the demo scenario
     purple_tea = next((p for p in products if "purple" in p.name.lower()), None)
 
-    if purple_tea:
+    if purple_tea and policy:
         facts.extend(
             [
                 BusinessFactResponse(
@@ -396,7 +400,7 @@ async def get_business_facts():
 
 
 @app.post("/api/conversations", response_model=ConversationResponse)
-async def create_conversation(customer_name: str = "Dana R."):
+async def create_conversation(customer_name: str = "Dana R.") -> ConversationResponse:
     """Create a new conversation."""
     from asili_agents.data.seed import create_demo_conversation
 
@@ -407,7 +411,7 @@ async def create_conversation(customer_name: str = "Dana R."):
 
 
 @app.get("/api/conversations/{conversation_id}", response_model=ConversationResponse)
-async def get_conversation(conversation_id: str):
+async def get_conversation(conversation_id: str) -> ConversationResponse:
     """Get a conversation by ID."""
     conversation = _state["conversations"].get(conversation_id)
     if not conversation:
@@ -421,7 +425,7 @@ async def get_conversation(conversation_id: str):
 
 
 @app.get("/api/decisions", response_model=list[AgentStepResponse])
-async def get_decisions():
+async def get_decisions() -> list[AgentStepResponse]:
     """Get all logged agent decisions."""
     decisions = get_decision_log()
     return [
@@ -439,7 +443,7 @@ async def get_decisions():
 
 
 @app.post("/api/reset")
-async def reset_demo():
+async def reset_demo() -> dict[str, str]:
     """Reset the demo state."""
     clear_decision_log()
     _state["conversations"] = {}
@@ -458,7 +462,7 @@ async def reset_demo():
 
 
 @app.post("/api/run", response_model=RunAgentsResponse)
-async def run_agents(request: RunAgentsRequest):
+async def run_agents(request: RunAgentsRequest) -> RunAgentsResponse:
     """Run the multi-agent system on a conversation.
 
     This endpoint executes the real ADK agents on the customer message,
@@ -549,7 +553,7 @@ async def run_agents(request: RunAgentsRequest):
 
 
 @app.post("/api/run/baseline")
-async def run_baseline_agent(request: RunAgentsRequest):
+async def run_baseline_agent(request: RunAgentsRequest) -> dict[str, Any]:
     """Run the baseline (single-model) agent for comparison.
 
     This endpoint executes the baseline agent which has no tools,
@@ -593,7 +597,7 @@ async def run_baseline_agent(request: RunAgentsRequest):
 
 
 @app.post("/api/approve", response_model=ApprovalResponse)
-async def approve_draft(request: ApprovalRequest):
+async def approve_draft(request: ApprovalRequest) -> ApprovalResponse:
     """Process approval/rejection of a pending draft message.
 
     Actions:
@@ -646,7 +650,7 @@ async def approve_draft(request: ApprovalRequest):
 
 
 @app.get("/api/pending/{conversation_id}")
-async def get_pending_draft(conversation_id: str):
+async def get_pending_draft(conversation_id: str) -> dict[str, Any]:
     """Get the pending draft for a conversation, if any."""
     pending = _state["pending_drafts"].get(conversation_id)
     if not pending:
@@ -696,7 +700,9 @@ async def run_trust_scorecard(limit: int = 6) -> dict[str, Any]:
     return result
 
 
-def _get_grounded_facts_for_response(products: list, policy) -> list[BusinessFactResponse]:
+def _get_grounded_facts_for_response(
+    products: list[Product], policy: Policy
+) -> list[BusinessFactResponse]:
     """Get grounded facts based on tool calls during agent run."""
     facts = []
 

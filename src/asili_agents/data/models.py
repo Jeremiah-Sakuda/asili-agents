@@ -9,7 +9,7 @@ These models represent the core entities in the system:
 - AgentDecisions (logged decisions for observability)
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Any
@@ -66,7 +66,7 @@ class Seller(BaseModel):
     origin_country: str = Field(..., description="Country of origin (e.g., 'KE')")
     destination_country: str = Field(default="US", description="Primary destination market")
     currency: str = Field(default="USD", description="Display currency")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @computed_field
     @property
@@ -97,8 +97,8 @@ class Product(BaseModel):
 
     # Metadata
     is_active: bool = Field(default=True)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @computed_field
     @property
@@ -163,8 +163,8 @@ class Policy(BaseModel):
         description="Return policy summary",
     )
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class Message(BaseModel):
@@ -184,7 +184,7 @@ class Message(BaseModel):
     )
 
     # Timestamps
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     sent_at: datetime | None = Field(default=None)
 
     @computed_field
@@ -207,8 +207,8 @@ class Conversation(BaseModel):
 
     messages: list[Message] = Field(default_factory=list)
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     def add_message(
         self,
@@ -264,7 +264,7 @@ class AgentDecision(BaseModel):
     tokens_used: int = Field(default=0)
     latency_ms: int = Field(default=0)
 
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @computed_field
     @property

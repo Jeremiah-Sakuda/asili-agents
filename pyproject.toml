@@ -24,14 +24,9 @@ classifiers = [
 dependencies = [
     "google-adk>=0.3.0",
     "google-cloud-aiplatform>=1.38.0",
-    "python-telegram-bot>=20.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
-    "sqlalchemy>=2.0.0",
-    "alembic>=1.12.0",
-    "asyncpg>=0.29.0",
     "python-dotenv>=1.0.0",
-    "structlog>=23.0.0",
     "uvicorn>=0.24.0",
     "fastapi>=0.104.0",
     "httpx>=0.25.0",
@@ -88,6 +83,9 @@ warn_return_any = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
 plugins = ["pydantic.mypy"]
+# Pydantic's `@computed_field` over `@property` is a supported, idiomatic pattern
+# that mypy flags as "decorators on top of @property"; disable that false positive.
+disable_error_code = ["prop-decorator"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
