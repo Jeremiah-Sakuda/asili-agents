@@ -212,6 +212,20 @@ def compute_bundle_price(
     # price = cost / (1 - margin)
     min_price_for_margin = total_cost / Decimal(str(1 - effective_margin_floor))
 
+    # If even the list price can't clear the margin floor (e.g. cost >= price, or
+    # an unusually high floor), a "bundle" would be a SURCHARGE above retail, not
+    # a discount. Refuse rather than emit a misleading margin-safe surcharge.
+    if min_price_for_margin > total_regular:
+        return {
+            "error": (
+                f"cannot meet the {effective_margin_floor:.0%} margin floor without charging "
+                f"above list price (cost too high relative to price)"
+            ),
+            "is_margin_safe": False,
+            "total_regular_price": float(total_regular),
+            "total_cost": float(total_cost),
+        }
+
     # Calculate discounted price (regular discount)
     discounted_price = total_regular * Decimal(str(1 - bundle_discount))
 

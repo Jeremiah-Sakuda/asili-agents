@@ -150,6 +150,27 @@ class TestMarginFloorNeverLeaks:
         assert r["bundle_price"] >= 0.97
 
 
+class TestCostExceedsPrice:
+    """P1 regression: cost >= price must refuse, not emit a surcharge labeled safe."""
+
+    def test_cost_above_price_is_refused(self):
+        sid = uuid4()
+        prod = Product(
+            id=uuid4(),
+            seller_id=sid,
+            sku="LOSS",
+            name="LossLeader",
+            description="d",
+            price=Decimal("10.00"),
+            cost=Decimal("9.00"),
+        )
+        set_pricing_context([prod], Policy(seller_id=sid, margin_floor=0.45))
+        r = compute_bundle_price([{"product_id": "LOSS", "quantity": 1}], margin_floor=0.45)
+        assert "error" in r
+        assert r["is_margin_safe"] is False
+        assert "bundle_price" not in r  # no surcharge emitted
+
+
 class TestInputValidation:
     """P0 regression: bad inputs must not crash or emit negative prices."""
 
