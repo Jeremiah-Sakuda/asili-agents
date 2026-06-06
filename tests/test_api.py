@@ -122,3 +122,73 @@ class TestResetEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "reset"
+
+
+class TestRunEndpointEventLoop:
+    """Regression tests for running agents inside the async endpoints.
+
+    ``run_agent``/``run_baseline`` are synchronous and call ``asyncio.run()``
+    internally. The ``/api/run`` endpoints are ``async``, so invoking those
+    helpers directly raised ``RuntimeError: asyncio.run() cannot be called from
+    a running event loop``. The endpoints must offload them to a worker thread.
+    """
+
+    def _fake_result(self, draft):
+        import asyncio
+
+        from asili_agents.runner import RunResult
+
+        async def _create_session():
+            return True
+
+        # Mirrors the real helper: uses asyncio.run() internally. Without the
+        # thread offload in the endpoint this blows up inside the running loop.
+        asyncio.run(_create_session())
+        return RunResult(
+            steps=[],
+            draft=draft,
+            draft_sources=[],
+            facts={},
+            raw_events=[],
+            success=True,
+        )
+
+    def test_run_endpoint_handles_internal_asyncio_run(self, client, monkeypatch):
+        """POST /api/run must not 500 due to a nested event loop."""
+        from asili_agents.api import main as main_module
+
+        monkeypatch.setattr(main_module, "create_runner", lambda *a, **k: object())
+        monkeypatch.setattr(
+            main_module,
+            "run_agent",
+            lambda runner, message: self._fake_result("Yes, purple tea is in stock."),
+        )
+
+        response = client.post(
+            "/api/run",
+            json={"conversation_id": "test-conv", "message": "Do you have purple tea?"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["draft"]["body"] == "Yes, purple tea is in stock."
+
+    def test_baseline_endpoint_handles_internal_asyncio_run(self, client, monkeypatch):
+        """POST /api/run/baseline must not 500 due to a nested event loop."""
+        import asyncio
+
+        from asili_agents.api import main as main_module
+
+        def fake_run_baseline(runner, message):
+            async def _create_session():
+                return True
+
+            asyncio.run(_create_session())
+            return "Baseline reply", []
+
+        monkeypatch.setattr(main_module, "create_baseline_runner", lambda *a, **k: object())
+        monkeypatch.setattr(main_module, "run_baseline", fake_run_baseline)
+
+        response = client.post(
+            "/api/run/baseline",
+            json={"conversation_id": "test-conv", "message": "Do you have purple tea?"},
+        )
+        assert response.status_code == 200, response.text

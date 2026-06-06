@@ -7,6 +7,7 @@ This API provides:
 4. Demo runner
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -414,7 +415,10 @@ async def run_agents(request: RunAgentsRequest):
     runner = create_runner(seller, products, policy)
     _state["runners"][request.conversation_id] = runner
 
-    result = run_agent(runner, customer_message)
+    # run_agent() is synchronous and uses asyncio.run() internally, so it must
+    # run in a worker thread to avoid "asyncio.run() cannot be called from a
+    # running event loop" inside this async endpoint.
+    result = await asyncio.to_thread(run_agent, runner, customer_message)
 
     if not result.success:
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {result.error}")
@@ -494,7 +498,9 @@ async def run_baseline_agent(request: RunAgentsRequest):
 
     # Create and run the baseline agent
     baseline_runner = create_baseline_runner(seller, products)
-    response_text, raw_events = run_baseline(baseline_runner, customer_message)
+    response_text, raw_events = await asyncio.to_thread(
+        run_baseline, baseline_runner, customer_message
+    )
 
     return {
         "response": response_text,

@@ -68,6 +68,7 @@ jobs:
             --allow-unauthenticated \
             --set-env-vars "GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }}" \
             --set-env-vars "GOOGLE_CLOUD_LOCATION=${{ env.REGION }}" \
+            --set-env-vars "GOOGLE_GENAI_USE_VERTEXAI=true" \
             --set-env-vars "DEMO_MODE=true"
 
       - name: Show deployment URL
