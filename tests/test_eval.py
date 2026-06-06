@@ -92,11 +92,27 @@ class TestEvaluateReply:
         assert score.passed is False
 
 
+class TestGroundedMeansRetrieved:
+    def test_grounded_requires_actual_retrieval(self, purple, demo_policy):
+        honest = "We have it — happy to help!"
+        not_looked_up = evaluate_reply(honest, product=purple, policy=demo_policy, retrieved=False)
+        looked_up = evaluate_reply(honest, product=purple, policy=demo_policy, retrieved=True)
+        # Same honest text, but only the one that actually consulted the catalog is grounded.
+        assert not_looked_up.no_overclaim is True
+        assert not_looked_up.grounded is False
+        assert looked_up.grounded is True
+
+    def test_unknown_retrieval_falls_back_to_no_overclaim(self, purple, demo_policy):
+        s = evaluate_reply("We have it!", product=purple, policy=demo_policy)
+        assert s.grounded == s.no_overclaim
+
+
 class TestAggregate:
     def test_empty(self):
         rates = aggregate([])
         assert rates["margin_safe_rate"] == 1.0
         assert rates["hallucination_rate"] == 0.0
+        assert rates["no_overclaim_rate"] == 1.0
 
 
 class TestRunScorecard:

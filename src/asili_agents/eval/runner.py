@@ -14,7 +14,10 @@ from asili_agents.data.models import Policy, Product, Seller
 from asili_agents.eval.scenarios import SCENARIOS, Scenario
 from asili_agents.eval.scoring import aggregate, evaluate_reply
 
-ReplyFn = Callable[[str], str | None]
+# A reply function returns either the reply text, or a dict
+# {"text": str, "retrieved": bool} so the scorer knows whether the catalog was
+# actually consulted (used to distinguish "grounded" from a lucky guess).
+ReplyFn = Callable[[str], Any]
 
 
 def score_system(
@@ -30,10 +33,16 @@ def score_system(
 
     for scenario in scenarios:
         product = by_sku.get(scenario.target_sku)
-        reply = reply_fn(scenario.prompt)
+        raw = reply_fn(scenario.prompt)
+        if isinstance(raw, dict):
+            reply = raw.get("text")
+            retrieved = raw.get("retrieved")
+        else:
+            reply = raw
+            retrieved = None
         if product is None:
             continue
-        score = evaluate_reply(reply, product=product, policy=policy)
+        score = evaluate_reply(reply, product=product, policy=policy, retrieved=retrieved)
         scores.append(score)
         scenario_results.append(
             {
@@ -41,6 +50,8 @@ def score_system(
                 "prompt": scenario.prompt,
                 "kind": scenario.kind,
                 "passed": score.passed,
+                "grounded": score.grounded,
+                "retrieved": retrieved,
                 "issues": score.issues,
                 "reply": reply,
             }
@@ -102,14 +113,24 @@ def build_live_reply_fns(
         run_baseline,
     )
 
-    def team_reply(prompt: str) -> str | None:
+    retrieval_markers = ("catalog", "check_stock", "get_costs", "find", "aggregate", "count")
+
+    def team_reply(prompt: str) -> dict[str, Any]:
         runner = create_runner(seller, products, policy, repository=repository, use_mcp=use_mcp)
         result = run_agent(runner, prompt)
-        return result.draft
+        # The team retrieved iff it actually called a catalog/stock/MCP read tool
+        # (or logged grounded facts) — not merely produced fluent text.
+        retrieved = any(
+            bool(step.grounded_facts)
+            or any(m in (step.reasoning_trace or "").lower() for m in retrieval_markers)
+            for step in result.steps
+        )
+        return {"text": result.draft, "retrieved": retrieved}
 
-    def baseline_reply(prompt: str) -> str | None:
+    def baseline_reply(prompt: str) -> dict[str, Any]:
         runner = create_baseline_runner(seller, products)
         text, _ = run_baseline(runner, prompt)
-        return text
+        # The baseline has no tools, so it can never retrieve.
+        return {"text": text, "retrieved": False}
 
     return team_reply, baseline_reply

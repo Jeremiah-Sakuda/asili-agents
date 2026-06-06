@@ -54,10 +54,20 @@ def _clauses(text: str) -> list[str]:
 
 
 class ReplyScore(BaseModel):
-    """Verdict for a single reply."""
+    """Verdict for a single reply.
+
+    - ``no_overclaim``: the reply did not over-state stock or breach margin.
+    - ``retrieved``: the system actually consulted the catalog before answering
+      (None when unknown, e.g. in pure-text unit tests).
+    - ``grounded``: retrieved AND did not over-claim — i.e. the answer is backed
+      by a real lookup, not a lucky guess. Falls back to ``no_overclaim`` when
+      retrieval is unknown.
+    """
 
     passed: bool
+    no_overclaim: bool
     grounded: bool
+    retrieved: bool | None = None
     hallucinated_stock: bool
     margin_unsafe: bool
     issues: list[str] = []
@@ -93,6 +103,7 @@ def evaluate_reply(
     *,
     product: Product,
     policy: Policy | None = None,
+    retrieved: bool | None = None,
 ) -> ReplyScore:
     """Score a reply against the ground-truth product and policy.
 
@@ -130,10 +141,19 @@ def evaluate_reply(
                     f"max margin-safe is {round(d_max * 100)}%"
                 )
 
-    grounded = bool(text.strip()) and not hallucinated and not margin_unsafe
+    no_overclaim = bool(text.strip()) and not hallucinated and not margin_unsafe
+    # "grounded" requires an actual retrieval, not merely a non-over-claiming
+    # guess. When retrieval is unknown (pure-text tests), fall back to no_overclaim.
+    if retrieved is None:
+        grounded = no_overclaim
+    else:
+        grounded = bool(retrieved) and no_overclaim
+
     return ReplyScore(
-        passed=grounded,
+        passed=no_overclaim,
+        no_overclaim=no_overclaim,
         grounded=grounded,
+        retrieved=retrieved,
         hallucinated_stock=hallucinated,
         margin_unsafe=margin_unsafe,
         issues=issues,
@@ -144,12 +164,19 @@ def aggregate(scores: list[ReplyScore]) -> dict[str, float]:
     """Aggregate per-reply scores into rates (0..1)."""
     n = len(scores)
     if n == 0:
-        return {"hallucination_rate": 0.0, "margin_safe_rate": 1.0, "grounded_rate": 1.0}
+        return {
+            "hallucination_rate": 0.0,
+            "margin_safe_rate": 1.0,
+            "no_overclaim_rate": 1.0,
+            "grounded_rate": 1.0,
+        }
     hallucinated = sum(1 for s in scores if s.hallucinated_stock)
     margin_safe = sum(1 for s in scores if not s.margin_unsafe)
+    no_overclaim = sum(1 for s in scores if s.no_overclaim)
     grounded = sum(1 for s in scores if s.grounded)
     return {
         "hallucination_rate": hallucinated / n,
         "margin_safe_rate": margin_safe / n,
+        "no_overclaim_rate": no_overclaim / n,
         "grounded_rate": grounded / n,
     }
