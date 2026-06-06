@@ -72,13 +72,15 @@ For a thin-margin importer, a confident wrong answer is not a cute bug. It is a 
 - **Messaging Agent** answers product and availability questions. It is instructed to *never* state a product detail or stock number without first reading it from the catalog. Its grounding path is MongoDB.
 - **Pricing Agent** handles every bundle and discount request by delegating the actual arithmetic to a deterministic tool — the LLM proposes *what* to price, Python decides *the number*.
 
-### MCP grounding — the agent's only data path
+### MCP grounding — the agent's data path
 
-Reads against the catalog go through the **MongoDB MCP server** (`mongodb-mcp-server`, launched via `npx`, with `--readOnly`). This is deliberate and load-bearing:
+In the deployed configuration (`USE_MCP=true` with a `MONGODB_URI`), reads against the catalog go through the **MongoDB MCP server** (`mongodb-mcp-server`, launched via `npx`, `--readOnly`). This is deliberate and load-bearing:
 
-- The agent has **no other way to learn what's in stock**. There is no inventory baked into the prompt and no separate cache to drift out of sync — the model sees exactly what's in Atlas *right now*.
+- There is no inventory baked into the prompt and no separate cache to drift out of sync — the model reads what's in Atlas *right now*.
 - `--readOnly` means the agent literally **cannot mutate** the catalog through its tools. The blast radius of a confused agent is zero writes.
-- Every fact the customer is told traces back to a document the agent actually read, which is what makes the glass-box trace and the Trust Scorecard meaningful rather than decorative.
+- Every fact the customer is told traces back to a document the agent actually read.
+
+For local development and the test suite, the same `catalog_search` / `check_stock` / `get_costs` contract is served by an **in-process repository** seeded from `data/seed.py`, so the system runs without Atlas; the deployed path swaps MongoDB in behind that stable contract. If `USE_MCP` is set but no `MONGODB_URI` is configured, the agent falls back to the in-process tools rather than failing — so "MCP-only" describes the deployed grounding path, not an absolute.
 
 ### Deterministic pricing — prices never come from the LLM
 
@@ -108,9 +110,11 @@ Each scenario is scored on three axes:
 | --- | --- |
 | **Hallucination rate** | Did the reply assert stock/product facts the catalog doesn't support? |
 | **Margin-safe rate** | Did every quoted price clear the 45% floor? |
-| **Grounded rate** | Was every customer-facing claim traceable to a read fact? |
+| **Grounded rate** | Did the reply give a substantive, non-over-claiming answer backed by an actual catalog lookup (not a lucky guess or a vague non-answer)? |
 
 The scorecard returns per-scenario pass/fail with the specific issues found, plus aggregate rates for team vs. baseline. The thesis — *"the AI ops team that can prove it never lied"* — is exactly this delta, rendered as numbers anyone can re-run.
+
+> **Honest scope.** The scorecard's checks are deterministic Python heuristics, hardened against common paraphrases (comma-formatted numbers, `%`/word/fraction discounts, "$X off", spelled-out and compound numbers, contrastive clauses) — not a general-purpose lie detector. The *structural* guarantees are the two it measures against: the deterministic margin engine (the LLM cannot author a price) and read-only MCP grounding (the agent cannot invent or mutate inventory).
 
 ---
 

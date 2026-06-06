@@ -103,14 +103,23 @@ class TestComputeBundlePrice:
         assert result1["margin_percent"] == result2["margin_percent"]
 
     def test_bundle_price_high_margin_floor(self):
-        """Test that high margin floor is respected."""
+        """A high-but-achievable margin floor is respected (price rises to meet it)."""
         result = compute_bundle_price(
             items=[{"product_id": "Purple Tea", "quantity": 2}],
-            margin_floor=0.60,  # 60% - very high
+            margin_floor=0.55,  # achievable for Purple Tea (max ~58.9% at list)
         )
-        # Should still be margin safe, but price may be higher
-        assert result["margin_percent"] >= 0.60
+        assert result["margin_percent"] >= 0.55
         assert result["is_margin_safe"] is True
+
+    def test_unachievable_margin_floor_is_refused(self):
+        """A floor that can't be met under list price refuses, not surcharges."""
+        result = compute_bundle_price(
+            items=[{"product_id": "Purple Tea", "quantity": 2}],
+            margin_floor=0.60,  # > 58.9% max at list -> unachievable without a surcharge
+        )
+        assert "error" in result
+        assert result["is_margin_safe"] is False
+        assert "bundle_price" not in result
 
     def test_bundle_price_items_detail(self):
         """Test that items detail is included in result."""
@@ -150,6 +159,27 @@ class TestMarginFloorNeverLeaks:
         assert r["bundle_price"] >= 0.97
 
 
+class TestCostExceedsPrice:
+    """P1 regression: cost >= price must refuse, not emit a surcharge labeled safe."""
+
+    def test_cost_above_price_is_refused(self):
+        sid = uuid4()
+        prod = Product(
+            id=uuid4(),
+            seller_id=sid,
+            sku="LOSS",
+            name="LossLeader",
+            description="d",
+            price=Decimal("10.00"),
+            cost=Decimal("9.00"),
+        )
+        set_pricing_context([prod], Policy(seller_id=sid, margin_floor=0.45))
+        r = compute_bundle_price([{"product_id": "LOSS", "quantity": 1}], margin_floor=0.45)
+        assert "error" in r
+        assert r["is_margin_safe"] is False
+        assert "bundle_price" not in r  # no surcharge emitted
+
+
 class TestInputValidation:
     """P0 regression: bad inputs must not crash or emit negative prices."""
 
@@ -174,3 +204,61 @@ class TestInputValidation:
     def test_missing_product_id_is_rejected(self):
         r = compute_bundle_price([{"quantity": 2}])
         assert "error" in r
+
+
+class TestMarginFloorBounds:
+    """P0 regression: an out-of-range margin floor must not crash or hang.
+
+    margin_floor reaches this tool either from an LLM tool call or from the
+    unbounded Policy.margin_floor float. Values >= 1.0 used to either raise a
+    DivisionByZero (floor == 1.0) or spin forever in the correction loop
+    (floor > 1.0); a negative floor is also nonsensical. All must return the
+    structured error dict instead.
+    """
+
+    def test_margin_floor_one_returns_error_not_division_by_zero(self):
+        # 1 - 1.0 == 0 previously raised decimal.DivisionByZero.
+        r = compute_bundle_price(
+            [{"product_id": "Purple Tea", "quantity": 2}],
+            margin_floor=1.0,
+        )
+        assert "error" in r
+        assert r["is_margin_safe"] is False
+        assert "bundle_price" not in r  # no quote emitted on bad input
+
+    def test_margin_floor_above_one_returns_error_not_infinite_loop(self):
+        # margin_floor=1.5 previously spun the correction loop forever. If this
+        # test returns at all, the loop is bounded.
+        r = compute_bundle_price(
+            [{"product_id": "Purple Tea", "quantity": 2}],
+            margin_floor=1.5,
+        )
+        assert "error" in r
+        assert r["is_margin_safe"] is False
+        assert "bundle_price" not in r
+
+    def test_negative_margin_floor_returns_error(self):
+        r = compute_bundle_price(
+            [{"product_id": "Purple Tea", "quantity": 2}],
+            margin_floor=-0.5,
+        )
+        assert "error" in r
+        assert r["is_margin_safe"] is False
+        assert "bundle_price" not in r
+
+    def test_unbounded_policy_margin_floor_is_rejected(self):
+        # A bad floor coming from Policy (not the LLM arg) must be caught too.
+        sid = uuid4()
+        prod = Product(
+            id=uuid4(),
+            seller_id=sid,
+            sku="X",
+            name="Widget",
+            description="d",
+            price=Decimal("1.00"),
+            cost=Decimal("0.53"),
+        )
+        set_pricing_context([prod], Policy(seller_id=sid, margin_floor=1.0))
+        r = compute_bundle_price([{"product_id": "X", "quantity": 1}])
+        assert "error" in r
+        assert r["is_margin_safe"] is False

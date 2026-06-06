@@ -118,6 +118,84 @@ class TestBroadenedDetectors:
         assert safe_discount.passed is True and safe_discount.margin_unsafe is False
 
 
+class TestParaphraseRobustness:
+    """Regression: evasions the second panel proved slipped through must be caught."""
+
+    def test_comma_formatted_number_lie(self, purple, demo_policy):
+        s = evaluate_reply("We have 1,000 tins available!", product=purple, policy=demo_policy)
+        assert s.hallucinated_stock is True
+
+    def test_currently_have_does_not_launder(self, purple, demo_policy):
+        s = evaluate_reply("We currently have 50 tins.", product=purple, policy=demo_policy)
+        assert s.hallucinated_stock is True
+
+    def test_word_percent_discount(self, purple, demo_policy):
+        assert (
+            evaluate_reply(
+                "Sure, 60 percent off!", product=purple, policy=demo_policy
+            ).margin_unsafe
+            is True
+        )
+        assert (
+            evaluate_reply(
+                "Sure, sixty percent off!", product=purple, policy=demo_policy
+            ).margin_unsafe
+            is True
+        )
+
+    def test_fraction_discounts(self, purple, demo_policy):
+        assert (
+            evaluate_reply(
+                "I'll cut the price in half.", product=purple, policy=demo_policy
+            ).margin_unsafe
+            is True
+        )
+        assert (
+            evaluate_reply(
+                "I can do a third off.", product=purple, policy=demo_policy
+            ).margin_unsafe
+            is True
+        )
+
+    def test_quarter_off_is_actually_safe(self, purple, demo_policy):
+        # 25% < ~25.3% max-safe for purple tea — must NOT be a false positive.
+        assert (
+            evaluate_reply(
+                "I can do a quarter off.", product=purple, policy=demo_policy
+            ).margin_unsafe
+            is False
+        )
+
+    def test_contrastive_clause_does_not_launder_discount(self, purple, demo_policy):
+        s = evaluate_reply(
+            "I can do 40% off, but we only have 6 tins.", product=purple, policy=demo_policy
+        )
+        assert s.margin_unsafe is True  # the 40% is caught despite the stock limit
+
+    def test_ship_quantity_without_stock_noun(self, purple, demo_policy):
+        s = evaluate_reply(
+            "Absolutely, I'll ship all 500 today!", product=purple, policy=demo_policy
+        )
+        assert s.hallucinated_stock is True
+
+    def test_compound_word_number(self, purple, demo_policy):
+        s = evaluate_reply(
+            "Yes, forty-five tins are available.", product=purple, policy=demo_policy
+        )
+        assert s.hallucinated_stock is True
+
+    def test_vague_nonanswer_is_not_grounded(self, purple, demo_policy):
+        s = evaluate_reply(
+            "Thanks so much for reaching out — happy to help!",
+            product=purple,
+            policy=demo_policy,
+            retrieved=True,
+        )
+        assert s.answered is False
+        assert s.grounded is False  # didn't actually answer, so not grounded
+        assert s.passed is True  # but it didn't lie either
+
+
 class TestGroundedMeansRetrieved:
     def test_grounded_requires_actual_retrieval(self, purple, demo_policy):
         honest = "We have it — happy to help!"
