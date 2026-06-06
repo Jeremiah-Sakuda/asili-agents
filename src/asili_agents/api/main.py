@@ -9,23 +9,30 @@ This API provides:
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from asili_agents.config import get_settings
 from asili_agents.data.models import (
     Conversation,
     MessageDirection,
     MessageStatus,
 )
+from asili_agents.data.repository import set_catalog_repository
 from asili_agents.data.seed import get_demo_seller
+from asili_agents.eval.runner import build_live_reply_fns, run_scorecard
 from asili_agents.runner import create_baseline_runner, create_runner, run_agent, run_baseline
 from asili_agents.tools.catalog import check_stock, get_costs, set_product_store
 from asili_agents.tools.channel import ApprovalResult, ApprovalStatus, set_approval_callback
 from asili_agents.tools.logging import clear_decision_log, get_decision_log
 from asili_agents.tools.pricing import compute_bundle_price, set_pricing_context
+
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 # Application state
 _state: dict[str, Any] = {}
@@ -33,19 +40,51 @@ _state: dict[str, Any] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize application state on startup."""
-    # Load demo data
-    seller, products, policy = get_demo_seller()
+    """Initialize application state on startup.
+
+    If ``MONGODB_URI`` is configured, the catalog/policy come from MongoDB Atlas
+    (the system of record) and the agents read through the MongoDB MCP server.
+    Otherwise the in-process demo seed is used (local dev + tests). A failure to
+    reach Atlas falls back to the demo seed so the service always boots.
+    """
+    settings = get_settings()
+    seller, demo_products, demo_policy = get_demo_seller()
+    products, policy = demo_products, demo_policy
+    repository = None
+    use_mcp = False
+
+    if settings.mongodb_uri:
+        try:
+            from asili_agents.data.mongo_repository import MongoCatalogRepository
+
+            repository = MongoCatalogRepository(settings.mongodb_uri, settings.mongodb_database)
+            mongo_products = repository.all_products()
+            mongo_policy = repository.get_policy()
+            if mongo_products:
+                products = mongo_products
+            if mongo_policy is not None:
+                policy = mongo_policy
+            set_catalog_repository(repository)
+            use_mcp = settings.use_mcp
+        except Exception:
+            # Atlas unreachable/misconfigured — fall back to the demo seed.
+            repository = None
+            use_mcp = False
+            products, policy = demo_products, demo_policy
+            set_product_store(products)
+            set_pricing_context(products, policy)
+    else:
+        set_product_store(products)
+        set_pricing_context(products, policy)
+
     _state["seller"] = seller
     _state["products"] = products
     _state["policy"] = policy
+    _state["repository"] = repository
+    _state["use_mcp"] = use_mcp
     _state["conversations"] = {}
     _state["pending_drafts"] = {}  # conversation_id -> draft info
     _state["runners"] = {}  # conversation_id -> runner
-
-    # Initialize tool stores
-    set_product_store(products)
-    set_pricing_context(products, policy)
 
     # Set up approval callback to store pending drafts
     def approval_callback(draft_id: str, body: str) -> ApprovalResult:
@@ -83,6 +122,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve the phone-inbox web UI (same-origin static files) at /app/.
+if WEB_DIR.is_dir():
+    app.mount("/app", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
 
 
 # ============================================================================
@@ -411,8 +454,14 @@ async def run_agents(request: RunAgentsRequest):
             raise HTTPException(status_code=400, detail="No customer message found")
         customer_message = inbound_messages[-1].body
 
-    # Create and run the agent system
-    runner = create_runner(seller, products, policy)
+    # Create and run the agent system (MongoDB + MCP when configured).
+    runner = create_runner(
+        seller,
+        products,
+        policy,
+        repository=_state.get("repository"),
+        use_mcp=_state.get("use_mcp"),
+    )
     _state["runners"][request.conversation_id] = runner
 
     # run_agent() is synchronous and uses asyncio.run() internally, so it must
@@ -574,6 +623,42 @@ async def get_pending_draft(conversation_id: str):
         "has_pending": True,
         "draft": pending,
     }
+
+
+@app.post("/api/eval")
+async def run_trust_scorecard(limit: int = 6) -> dict[str, Any]:
+    """Run the Trust Scorecard: the multi-agent team vs the naive baseline.
+
+    Runs adversarial scenarios through both systems and scores each reply for
+    hallucinated stock, margin safety, and groundedness. ``limit`` bounds how
+    many scenarios run live (each issues real Gemini calls), defaulting to 6 to
+    keep latency and token spend reasonable for an interactive demo.
+    """
+    seller = _state.get("seller")
+    products = _state.get("products", [])
+    policy = _state.get("policy")
+
+    if not seller or not policy:
+        raise HTTPException(status_code=500, detail="Demo data not initialized")
+
+    team_fn, baseline_fn = build_live_reply_fns(
+        seller,
+        products,
+        policy,
+        repository=_state.get("repository"),
+        use_mcp=_state.get("use_mcp"),
+    )
+    # run_scorecard drives synchronous ADK runners (asyncio.run internally), so
+    # offload it to a worker thread to avoid a nested event loop.
+    result = await asyncio.to_thread(
+        run_scorecard,
+        products,
+        policy,
+        team_reply_fn=team_fn,
+        baseline_reply_fn=baseline_fn,
+        limit=limit,
+    )
+    return result
 
 
 def _get_grounded_facts_for_response(products: list, policy) -> list[BusinessFactResponse]:

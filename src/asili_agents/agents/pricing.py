@@ -8,6 +8,11 @@ tool which uses exact arithmetic.
 
 from google.adk.agents import LlmAgent
 
+from asili_agents.agents.mcp_tools import (
+    MCP_GROUNDING_INSTRUCTION,
+    make_mongodb_mcp_toolset,
+    resolve_use_mcp,
+)
 from asili_agents.config import get_settings
 from asili_agents.tools.catalog import get_costs
 from asili_agents.tools.logging import log_decision
@@ -59,17 +64,34 @@ Your pricing decisions directly affect the seller's profitability. Be precise.
 def create_pricing_agent(
     seller_name: str = "Mahaba Tea Co.",
     margin_floor: float = 0.45,
+    use_mcp: bool | None = None,
 ) -> LlmAgent:
     """Create the Pricing Agent.
 
     Args:
         seller_name: Name of the seller business.
         margin_floor: Minimum acceptable margin (0.45 = 45%).
+        use_mcp: When True (or settings.use_mcp), the agent reads costs from the
+            MongoDB MCP server; the bundle price itself is ALWAYS computed by the
+            deterministic ``compute_bundle_price`` tool, never the LLM.
 
     Returns:
         Configured LlmAgent for pricing calculations.
     """
     settings = get_settings()
+    instruction = PRICING_INSTRUCTION.format(
+        seller_name=seller_name,
+        margin_floor_percent=int(margin_floor * 100),
+    )
+    # compute_bundle_price stays deterministic in every mode — the LLM never
+    # invents a price. Only the *cost lookup* moves to MCP when enabled.
+    tools: list = [get_costs, compute_bundle_price, log_decision]
+
+    if resolve_use_mcp(use_mcp, settings):
+        toolset = make_mongodb_mcp_toolset(settings)
+        if toolset is not None:
+            tools = [toolset, compute_bundle_price, log_decision]
+            instruction = instruction + MCP_GROUNDING_INSTRUCTION
 
     return LlmAgent(
         name="pricing_agent",
@@ -79,13 +101,6 @@ def create_pricing_agent(
             "Use this agent when a customer asks about bundles, discounts, "
             "or special pricing. Ensures all prices respect the margin floor."
         ),
-        instruction=PRICING_INSTRUCTION.format(
-            seller_name=seller_name,
-            margin_floor_percent=int(margin_floor * 100),
-        ),
-        tools=[
-            get_costs,
-            compute_bundle_price,
-            log_decision,
-        ],
+        instruction=instruction,
+        tools=tools,
     )

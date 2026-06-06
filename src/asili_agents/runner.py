@@ -17,6 +17,7 @@ from asili_agents.agents.baseline import create_baseline_agent, generate_catalog
 from asili_agents.agents.operations_manager import create_operations_manager
 from asili_agents.config import get_settings
 from asili_agents.data.models import Policy, Product, Seller
+from asili_agents.data.repository import CatalogRepository, set_catalog_repository
 from asili_agents.tools.catalog import set_product_store
 from asili_agents.tools.logging import clear_decision_log, get_decision_log
 from asili_agents.tools.pricing import set_pricing_context
@@ -75,6 +76,9 @@ def create_runner(
     seller: Seller,
     products: list[Product],
     policy: Policy,
+    *,
+    repository: CatalogRepository | None = None,
+    use_mcp: bool | None = None,
 ) -> InMemoryRunner:
     """Create an ADK InMemoryRunner with the operations manager agent.
 
@@ -82,6 +86,11 @@ def create_runner(
         seller: The seller entity.
         products: List of products for the catalog.
         policy: Business policy settings.
+        repository: Active catalog repository. When provided (e.g. a
+            ``MongoCatalogRepository``), the deterministic pricing tool reads
+            from it; otherwise a static repository is built from ``products``.
+        use_mcp: Route the specialist agents' catalog reads through the MongoDB
+            MCP server (defaults to settings.use_mcp).
 
     Returns:
         Configured InMemoryRunner ready to execute.
@@ -89,9 +98,12 @@ def create_runner(
     # Configure API credentials
     _configure_api_credentials()
 
-    # Initialize tool stores
-    set_product_store(products)
-    set_pricing_context(products, policy)
+    # Initialize the data source the tools read from.
+    if repository is not None:
+        set_catalog_repository(repository)
+    else:
+        set_product_store(products)
+        set_pricing_context(products, policy)
     clear_decision_log()
 
     # Create the multi-agent system
@@ -100,6 +112,7 @@ def create_runner(
         brand_voice=seller.brand_voice,
         lane=seller.lane,
         margin_floor=policy.margin_floor,
+        use_mcp=use_mcp,
     )
 
     return InMemoryRunner(agent=agent)

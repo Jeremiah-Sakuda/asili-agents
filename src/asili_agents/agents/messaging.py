@@ -7,6 +7,11 @@ responses are factually accurate — never hallucinating inventory.
 
 from google.adk.agents import LlmAgent
 
+from asili_agents.agents.mcp_tools import (
+    MCP_GROUNDING_INSTRUCTION,
+    make_mongodb_mcp_toolset,
+    resolve_use_mcp,
+)
 from asili_agents.config import get_settings
 from asili_agents.tools.catalog import catalog_search, check_stock
 from asili_agents.tools.logging import log_decision
@@ -55,17 +60,34 @@ Remember: Your responses will be reviewed by the seller before sending. Accuracy
 def create_messaging_agent(
     seller_name: str = "Mahaba Tea Co.",
     brand_voice: str = "warm and knowledgeable about tea",
+    use_mcp: bool | None = None,
 ) -> LlmAgent:
     """Create the Messaging Agent.
 
     Args:
         seller_name: Name of the seller business.
         brand_voice: Tone/style guide for responses.
+        use_mcp: When True (or when settings.use_mcp is True), the agent reads
+            the catalog through the MongoDB MCP server instead of the in-process
+            catalog tools. Falls back to the in-process tools if MongoDB is not
+            configured.
 
     Returns:
         Configured LlmAgent for customer messaging.
     """
     settings = get_settings()
+    instruction = MESSAGING_INSTRUCTION.format(
+        seller_name=seller_name,
+        brand_voice=brand_voice,
+    )
+    tools: list = [catalog_search, check_stock, log_decision]
+
+    if resolve_use_mcp(use_mcp, settings):
+        toolset = make_mongodb_mcp_toolset(settings)
+        if toolset is not None:
+            # MongoDB MCP becomes the agent's only catalog/stock data path.
+            tools = [toolset, log_decision]
+            instruction = instruction + MCP_GROUNDING_INSTRUCTION
 
     return LlmAgent(
         name="messaging_agent",
@@ -75,13 +97,6 @@ def create_messaging_agent(
             "Use this agent to answer product questions, check availability, "
             "and compose helpful replies. Never invents product details."
         ),
-        instruction=MESSAGING_INSTRUCTION.format(
-            seller_name=seller_name,
-            brand_voice=brand_voice,
-        ),
-        tools=[
-            catalog_search,
-            check_stock,
-            log_decision,
-        ],
+        instruction=instruction,
+        tools=tools,
     )

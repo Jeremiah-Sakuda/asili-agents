@@ -55,6 +55,19 @@ echo "Building image: $IMAGE_TAG"
 docker build -t "$IMAGE_TAG" .
 docker push "$IMAGE_TAG"
 
+# Attach the MongoDB connection string from Secret Manager if it exists, and
+# turn on MCP grounding. Otherwise deploy in demo mode (in-process seed data).
+SECRET_FLAG=""
+MCP_ENV="USE_MCP=false,DEMO_MODE=true"
+if gcloud secrets describe asili-mongodb-uri >/dev/null 2>&1; then
+    SECRET_FLAG="--set-secrets=MONGODB_URI=asili-mongodb-uri:latest"
+    MCP_ENV="USE_MCP=true,MCP_READ_ONLY=true,DEMO_MODE=false"
+    echo "MongoDB secret found — deploying with MCP grounding enabled."
+else
+    echo "WARN: secret 'asili-mongodb-uri' not found — deploying in DEMO mode."
+    echo "      Create it with: gcloud secrets create asili-mongodb-uri --data-file=-"
+fi
+
 # Deploy to Cloud Run
 echo "Deploying to Cloud Run..."
 gcloud run deploy "$SERVICE_NAME" \
@@ -62,9 +75,8 @@ gcloud run deploy "$SERVICE_NAME" \
     --platform managed \
     --region "$REGION" \
     --allow-unauthenticated \
-    --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID" \
-    --set-env-vars "GOOGLE_CLOUD_LOCATION=$REGION" \
-    --set-env-vars "DEMO_MODE=true" \
+    --set-env-vars "GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION,GOOGLE_GENAI_USE_VERTEXAI=true,MONGODB_DATABASE=${MONGODB_DATABASE:-asili},$MCP_ENV" \
+    $SECRET_FLAG \
     --memory 512Mi \
     --cpu 1 \
     --min-instances 0 \

@@ -99,6 +99,7 @@ def create_operations_manager(
     brand_voice: str = "warm and knowledgeable about tea",
     lane: str = "KE → US",
     margin_floor: float = 0.45,
+    use_mcp: bool | None = None,
 ) -> Agent:
     """Create the Operations Manager (root agent).
 
@@ -112,6 +113,8 @@ def create_operations_manager(
         brand_voice: Tone/style guide for responses.
         lane: Trade lane (e.g., "KE → US").
         margin_floor: Minimum acceptable margin.
+        use_mcp: Route the specialist agents' catalog reads through the MongoDB
+            MCP server (defaults to settings.use_mcp).
 
     Returns:
         Configured root Agent with sub-agents.
@@ -122,10 +125,12 @@ def create_operations_manager(
     messaging_agent = create_messaging_agent(
         seller_name=seller_name,
         brand_voice=brand_voice,
+        use_mcp=use_mcp,
     )
     pricing_agent = create_pricing_agent(
         seller_name=seller_name,
         margin_floor=margin_floor,
+        use_mcp=use_mcp,
     )
 
     # Create the Operations Manager with sub-agents

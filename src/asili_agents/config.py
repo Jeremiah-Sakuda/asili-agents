@@ -39,10 +39,6 @@ class Settings(BaseSettings):
     )
 
     # Vertex AI
-    vertex_search_datastore_id: str | None = Field(
-        default=None,
-        description="Vertex AI Search datastore ID for catalog grounding",
-    )
     gemini_model: str = Field(
         default="gemini-2.5-flash",
         description="Gemini model to use for agents (Vertex AI serves the 2.5 series)",
@@ -58,6 +54,32 @@ class Settings(BaseSettings):
     database_url: str = Field(
         default="sqlite+aiosqlite:///./asili_agents.db",
         description="Database connection URL",
+    )
+
+    # MongoDB (system of record + MCP grounding)
+    mongodb_uri: str | None = Field(
+        default=None,
+        description="MongoDB Atlas connection string (SRV URI). Required when use_mcp is True.",
+    )
+    mongodb_database: str = Field(
+        default="asili",
+        description="MongoDB database name",
+    )
+    use_mcp: bool = Field(
+        default=False,
+        description=(
+            "Route the agents' catalog/stock reads through the MongoDB MCP server "
+            "(npx mongodb-mcp-server). When False, agents use the in-process repository "
+            "(used for local dev and tests)."
+        ),
+    )
+    mcp_read_only: bool = Field(
+        default=True,
+        description="Run the MongoDB MCP server with --readOnly (agents never write via MCP).",
+    )
+    mcp_server_command: str = Field(
+        default="npx",
+        description="Command used to launch the MongoDB MCP server.",
     )
 
     # API
