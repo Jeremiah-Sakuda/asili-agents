@@ -17,11 +17,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from asili_agents.config import get_settings
 from asili_agents.data.models import (
     Conversation,
     MessageDirection,
     MessageStatus,
 )
+from asili_agents.data.repository import set_catalog_repository
 from asili_agents.data.seed import get_demo_seller
 from asili_agents.eval.runner import build_live_reply_fns, run_scorecard
 from asili_agents.runner import create_baseline_runner, create_runner, run_agent, run_baseline
@@ -38,19 +40,51 @@ _state: dict[str, Any] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize application state on startup."""
-    # Load demo data
-    seller, products, policy = get_demo_seller()
+    """Initialize application state on startup.
+
+    If ``MONGODB_URI`` is configured, the catalog/policy come from MongoDB Atlas
+    (the system of record) and the agents read through the MongoDB MCP server.
+    Otherwise the in-process demo seed is used (local dev + tests). A failure to
+    reach Atlas falls back to the demo seed so the service always boots.
+    """
+    settings = get_settings()
+    seller, demo_products, demo_policy = get_demo_seller()
+    products, policy = demo_products, demo_policy
+    repository = None
+    use_mcp = False
+
+    if settings.mongodb_uri:
+        try:
+            from asili_agents.data.mongo_repository import MongoCatalogRepository
+
+            repository = MongoCatalogRepository(settings.mongodb_uri, settings.mongodb_database)
+            mongo_products = repository.all_products()
+            mongo_policy = repository.get_policy()
+            if mongo_products:
+                products = mongo_products
+            if mongo_policy is not None:
+                policy = mongo_policy
+            set_catalog_repository(repository)
+            use_mcp = settings.use_mcp
+        except Exception:
+            # Atlas unreachable/misconfigured — fall back to the demo seed.
+            repository = None
+            use_mcp = False
+            products, policy = demo_products, demo_policy
+            set_product_store(products)
+            set_pricing_context(products, policy)
+    else:
+        set_product_store(products)
+        set_pricing_context(products, policy)
+
     _state["seller"] = seller
     _state["products"] = products
     _state["policy"] = policy
+    _state["repository"] = repository
+    _state["use_mcp"] = use_mcp
     _state["conversations"] = {}
     _state["pending_drafts"] = {}  # conversation_id -> draft info
     _state["runners"] = {}  # conversation_id -> runner
-
-    # Initialize tool stores
-    set_product_store(products)
-    set_pricing_context(products, policy)
 
     # Set up approval callback to store pending drafts
     def approval_callback(draft_id: str, body: str) -> ApprovalResult:
@@ -420,8 +454,14 @@ async def run_agents(request: RunAgentsRequest):
             raise HTTPException(status_code=400, detail="No customer message found")
         customer_message = inbound_messages[-1].body
 
-    # Create and run the agent system
-    runner = create_runner(seller, products, policy)
+    # Create and run the agent system (MongoDB + MCP when configured).
+    runner = create_runner(
+        seller,
+        products,
+        policy,
+        repository=_state.get("repository"),
+        use_mcp=_state.get("use_mcp"),
+    )
     _state["runners"][request.conversation_id] = runner
 
     # run_agent() is synchronous and uses asyncio.run() internally, so it must
@@ -601,7 +641,13 @@ async def run_trust_scorecard(limit: int = 6) -> dict[str, Any]:
     if not seller or not policy:
         raise HTTPException(status_code=500, detail="Demo data not initialized")
 
-    team_fn, baseline_fn = build_live_reply_fns(seller, products, policy)
+    team_fn, baseline_fn = build_live_reply_fns(
+        seller,
+        products,
+        policy,
+        repository=_state.get("repository"),
+        use_mcp=_state.get("use_mcp"),
+    )
     # run_scorecard drives synchronous ADK runners (asyncio.run internally), so
     # offload it to a worker thread to avoid a nested event loop.
     result = await asyncio.to_thread(

@@ -84,12 +84,16 @@ def build_live_reply_fns(
     seller: Seller,
     products: list[Product],
     policy: Policy,
+    *,
+    repository: Any | None = None,
+    use_mcp: bool | None = None,
 ) -> tuple[ReplyFn, ReplyFn]:
     """Build reply functions backed by the real ADK runners (for /api/eval).
 
     Each call spins up a fresh runner so scenarios don't share conversation
     state. This issues real Gemini calls, so it requires API credentials and is
-    intended for the deployed/graded path, not CI.
+    intended for the deployed/graded path, not CI. When ``repository``/``use_mcp``
+    are supplied, the team reads through MongoDB + the MongoDB MCP server.
     """
     from asili_agents.runner import (
         create_baseline_runner,
@@ -99,7 +103,7 @@ def build_live_reply_fns(
     )
 
     def team_reply(prompt: str) -> str | None:
-        runner = create_runner(seller, products, policy)
+        runner = create_runner(seller, products, policy, repository=repository, use_mcp=use_mcp)
         result = run_agent(runner, prompt)
         return result.draft
 
