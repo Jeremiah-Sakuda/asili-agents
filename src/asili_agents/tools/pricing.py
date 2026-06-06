@@ -17,6 +17,18 @@ from asili_agents.data.repository import (
     set_catalog_repository,
 )
 
+# A margin of 100% is mathematically unreachable (it implies zero cost at any
+# positive price), and a floor at/above 1.0 is actively dangerous: it makes the
+# min-price formula divide by zero (1 - 1.0) and lets the belt-and-suspenders
+# loop increment forever. Reject anything at/above this ceiling. Floors this
+# high are also never a real business policy, so clamping them out is safe.
+MAX_MARGIN_FLOOR = 0.99
+
+# Defense-in-depth cap for the margin-correction loop below. The loop only ever
+# nudges the price up by rounding error (a cent or two), so this is wildly more
+# than enough headroom while still guaranteeing the loop can never wedge.
+MAX_MARGIN_LOOP_ITERATIONS = 100_000
+
 
 class BundleItem(BaseModel):
     """An item in a bundle."""
@@ -109,6 +121,28 @@ def compute_bundle_price(
         else:
             effective_margin_floor = 0.45  # Default 45%
 
+    # Validate the margin floor. It comes either from an LLM tool call or from
+    # the unbounded Policy.margin_floor float, so it may be non-numeric or out
+    # of range. An out-of-range floor would otherwise crash (floor == 1.0 -> a
+    # divide-by-zero at min_price_for_margin) or hang the request (floor >= 1.0
+    # -> the correction loop can never reach the margin and increments forever).
+    # Reject early with the same structured error shape used for other bad input.
+    try:
+        effective_margin_floor = float(effective_margin_floor)
+    except (TypeError, ValueError):
+        return {
+            "error": f"invalid margin_floor: {effective_margin_floor!r}",
+            "is_margin_safe": False,
+        }
+    if not (0.0 <= effective_margin_floor < MAX_MARGIN_FLOOR):
+        return {
+            "error": (
+                f"margin_floor must be between 0.0 and {MAX_MARGIN_FLOOR} "
+                f"(got {effective_margin_floor})"
+            ),
+            "is_margin_safe": False,
+        }
+
     # Get the bundle discount from policy.
     bundle_discount = 0.05  # Default 5%
     if policy is not None:
@@ -193,9 +227,18 @@ def compute_bundle_price(
     bundle_price = bundle_price.quantize(cent, rounding=ROUND_CEILING)
 
     # Belt-and-suspenders: never emit a price whose realized margin is below floor.
+    # The iteration cap is defense-in-depth — effective_margin_floor is already
+    # validated above, but a bounded loop guarantees a thread can never wedge
+    # here regardless of future changes.
     floor_dec = Decimal(str(effective_margin_floor))
-    while bundle_price > 0 and (bundle_price - total_cost) / bundle_price < floor_dec:
+    iterations = 0
+    while (
+        bundle_price > 0
+        and (bundle_price - total_cost) / bundle_price < floor_dec
+        and iterations < MAX_MARGIN_LOOP_ITERATIONS
+    ):
         bundle_price += cent
+        iterations += 1
 
     # Calculate actual metrics
     actual_discount = total_regular - bundle_price
