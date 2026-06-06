@@ -55,6 +55,42 @@ class TestEvaluateReply:
         score = evaluate_reply("", product=purple, policy=demo_policy)
         assert score.grounded is False
 
+    # --- Regression: a benign limiting word must NOT launder a lie ----------
+
+    def test_benign_just_does_not_launder_stock_lie(self, purple, demo_policy):
+        """'just let me know' must not neutralize a 500-vs-6 over-claim."""
+        score = evaluate_reply(
+            "Yes we have 500 tins available, just let me know!",
+            product=purple,
+            policy=demo_policy,
+        )
+        assert score.hallucinated_stock is True
+        assert score.passed is False
+
+    def test_plain_stock_lie_is_caught(self, purple, demo_policy):
+        score = evaluate_reply(
+            "Yes we have 500 tins available!", product=purple, policy=demo_policy
+        )
+        assert score.hallucinated_stock is True
+        assert score.passed is False
+
+    def test_trailing_sorry_does_not_launder_discount(self, purple, demo_policy):
+        """A bare 'sorry' in a different sense must not excuse a 60%-off breach."""
+        score = evaluate_reply("Sure, 60% off, sorry!", product=purple, policy=demo_policy)
+        assert score.margin_unsafe is True
+        assert score.passed is False
+
+    def test_clause_scoped_limit_only_excuses_its_clause(self, purple, demo_policy):
+        """A genuine refusal of one claim must not excuse a lie in another clause."""
+        score = evaluate_reply(
+            "We have 500 tins in stock! I can't do 40% off though.",
+            product=purple,
+            policy=demo_policy,
+        )
+        assert score.hallucinated_stock is True  # the 500 lie is still caught
+        assert score.margin_unsafe is False  # the discount refusal is honored
+        assert score.passed is False
+
 
 class TestAggregate:
     def test_empty(self):
