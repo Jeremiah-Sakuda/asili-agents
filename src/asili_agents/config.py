@@ -44,8 +44,8 @@ class Settings(BaseSettings):
         description="Vertex AI Search datastore ID for catalog grounding",
     )
     gemini_model: str = Field(
-        default="gemini-2.0-flash",
-        description="Gemini model to use for agents",
+        default="gemini-2.5-flash",
+        description="Gemini model to use for agents (Vertex AI serves the 2.5 series)",
     )
 
     # Telegram
