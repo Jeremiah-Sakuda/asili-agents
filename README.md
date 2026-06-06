@@ -203,10 +203,36 @@ Run the tests with `pytest`.
 
 ---
 
+## Project structure
+
+```
+asili-agents/
+├── src/asili_agents/
+│   ├── agents/         # ADK agents: operations_manager, messaging, pricing, baseline, mcp_tools
+│   ├── tools/          # catalog (grounding), pricing (deterministic Decimal), logging, channel (approval gate)
+│   ├── data/           # pydantic models, CatalogRepository (static + MongoDB), seed data + tenants
+│   ├── eval/           # Trust Scorecard: scoring (deterministic), scenarios, runner
+│   ├── api/            # FastAPI app (REST endpoints + serves the web UI)
+│   ├── web/            # phone-inbox SPA (vanilla JS, served at /app/)
+│   ├── runner.py       # ADK InMemoryRunner integration (team + baseline)
+│   ├── config.py       # pydantic-settings configuration
+│   ├── cli.py          # `asili-agents serve|demo`
+│   └── demo.py         # scripted demo scenario
+├── tests/              # pytest suite (pricing, eval, agents, api, repository, runner)
+├── scripts/            # seed_atlas.py, deploy.sh, setup-gcp.sh
+├── docs/               # ARCHITECTURE, API, DEVELOPMENT, TRUST_SCORECARD
+├── Dockerfile          # Python + Node (for the MongoDB MCP server) → Cloud Run
+└── pyproject.toml
+```
+
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for a module-by-module guide and the full configuration reference.
+
+---
+
 ## Data sources
 
 - **Canonical demo seller — Mahaba Tea Co.** A Kenyan specialty-tea importer on the **KE → US** lane, with a real-feeling six-SKU catalog (Purple Tea, Kenyan Green, Kenya Black, Silver Needle White, Chai Masala, and a Discovery Sampler), deliberate low-stock items, honest costs, and a 45% margin-floor policy. Seed data lives in `src/asili_agents/data/`.
-- **Live state at runtime** is read from **MongoDB Atlas** via the MCP server — the seed simply populates Atlas; once running, the catalog the agents see is whatever is in the database.
+- **Live state in the deployed configuration** is read from **MongoDB Atlas** via the MCP server — the seed simply populates Atlas; once running, the catalog the agents see is whatever is in the database. Locally (and in tests) the same catalog contract is served from the in-process seed, so the system runs without Atlas.
 
 The demo question — *"Do you have the purple tea in stock? Can you do a bundle?"* — is the whole thesis in one exchange:
 
@@ -222,10 +248,20 @@ The demo question — *"Do you have the purple tea in stock? Can you do a bundle
 This README makes no claims the code doesn't back:
 
 - **The deterministic margin engine, the ADK multi-agent topology, the approval gate, the naive baseline, and the Trust Scorecard are implemented in this repository**, not mocked for a screenshot. The pricing math is plain Python you can read in `src/asili_agents/tools/pricing.py`, and the scorecard's metrics are computed from actual agent runs.
-- **Grounding is MongoDB, full stop.** The agent's catalog knowledge comes through the MongoDB MCP server against Atlas. **This project does not use Vertex AI Search or a RAG retrieval pipeline** — that approach was considered and removed, and no part of this submission depends on it.
+- **Grounding is MongoDB.** In the deployed configuration the agent's catalog knowledge comes through the MongoDB MCP server against Atlas (with an in-process fallback for local dev/tests). **This project does not use Vertex AI Search or a RAG retrieval pipeline** — that approach was considered and removed, and no part of this submission depends on it.
 - **The numbers in this document are reproducible.** The ~$34 / ~57% bundle is what the deterministic engine actually returns for two tins of Purple Tea; the baseline's failures are what a tool-less agent actually produces. Run `POST /api/eval` and check for yourself — that re-runnability is the point.
 
 If a claim here isn't true in the code, that's a bug, and we'd rather fix it than ship it. An ops team that can't prove its honesty has no business making promises on a founder's behalf.
+
+---
+
+## Documentation
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — system design, the runtime diagram, and honest implementation status
+- [docs/API.md](docs/API.md) — complete REST API reference
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — setup, project structure, configuration (env vars), and tooling
+- [docs/TRUST_SCORECARD.md](docs/TRUST_SCORECARD.md) — how the deterministic scorer works and its honest limits
+- [BY_HAND.md](BY_HAND.md) — manual steps to finish deployment / submission
 
 ---
 
