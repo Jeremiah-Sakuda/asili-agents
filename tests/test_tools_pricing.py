@@ -4,7 +4,11 @@ These tests verify that the compute_bundle_price tool produces
 correct, deterministic, margin-safe prices.
 """
 
-from asili_agents.tools.pricing import compute_bundle_price
+from decimal import Decimal
+from uuid import uuid4
+
+from asili_agents.data.models import Policy, Product
+from asili_agents.tools.pricing import compute_bundle_price, set_pricing_context
 
 
 class TestComputeBundlePrice:
@@ -121,3 +125,52 @@ class TestComputeBundlePrice:
         assert item["quantity"] == 2
         assert item["unit_price"] == 18.00
         assert item["line_price"] == 36.00
+
+
+class TestMarginFloorNeverLeaks:
+    """P0 regression: rounding must never return a sub-floor price."""
+
+    def test_floor_bound_price_rounds_up_not_down(self):
+        # price 1.00 / cost 0.53 previously returned 0.96 at 44.79% (below floor).
+        sid = uuid4()
+        prod = Product(
+            id=uuid4(),
+            seller_id=sid,
+            sku="X",
+            name="Widget",
+            description="d",
+            price=Decimal("1.00"),
+            cost=Decimal("0.53"),
+        )
+        set_pricing_context([prod], Policy(seller_id=sid, margin_floor=0.45))
+        r = compute_bundle_price([{"product_id": "X", "quantity": 1}], margin_floor=0.45)
+        assert "error" not in r
+        assert r["margin_percent"] >= 0.45
+        assert r["is_margin_safe"] is True
+        assert r["bundle_price"] >= 0.97
+
+
+class TestInputValidation:
+    """P0 regression: bad inputs must not crash or emit negative prices."""
+
+    def test_string_quantity_is_coerced(self):
+        r = compute_bundle_price([{"product_id": "Purple Tea", "quantity": "2"}], margin_floor=0.45)
+        assert "error" not in r
+        assert r["is_margin_safe"] is True
+
+    def test_negative_quantity_is_rejected(self):
+        r = compute_bundle_price([{"product_id": "Purple Tea", "quantity": -5}], margin_floor=0.45)
+        assert "error" in r
+        assert "bundle_price" not in r  # no negative quote emitted
+
+    def test_zero_quantity_is_rejected(self):
+        r = compute_bundle_price([{"product_id": "Purple Tea", "quantity": 0}])
+        assert "error" in r
+
+    def test_non_numeric_quantity_is_rejected(self):
+        r = compute_bundle_price([{"product_id": "Purple Tea", "quantity": "abc"}])
+        assert "error" in r
+
+    def test_missing_product_id_is_rejected(self):
+        r = compute_bundle_price([{"quantity": 2}])
+        assert "error" in r

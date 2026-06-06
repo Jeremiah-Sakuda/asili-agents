@@ -5,7 +5,7 @@ arithmetic, not LLM generation. This ensures prices are always
 calculated correctly and respect the margin floor.
 """
 
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_CEILING, Decimal
 from typing import Any
 
 from pydantic import BaseModel
@@ -109,12 +109,10 @@ def compute_bundle_price(
         else:
             effective_margin_floor = 0.45  # Default 45%
 
-    # Get discount limits from policy
+    # Get the bundle discount from policy.
     bundle_discount = 0.05  # Default 5%
-    max_discount = 0.10  # Default 10%
     if policy is not None:
         bundle_discount = policy.bundle_discount_percent
-        max_discount = policy.max_bundle_discount_percent
 
     # Calculate totals
     total_regular = Decimal("0")
@@ -124,7 +122,20 @@ def compute_bundle_price(
 
     for item in items:
         product_id = item.get("product_id", "")
-        quantity = item.get("quantity", 1)
+        if not isinstance(product_id, str) or not product_id.strip():
+            errors.append(f"invalid product_id: {product_id!r}")
+            continue
+
+        # Coerce quantity — agent/LLM tool calls frequently pass it as a string.
+        raw_quantity = item.get("quantity", 1)
+        try:
+            quantity = int(raw_quantity)
+        except (TypeError, ValueError):
+            errors.append(f"invalid quantity {raw_quantity!r} for {product_id}")
+            continue
+        if quantity <= 0:
+            errors.append(f"quantity must be a positive integer for {product_id}")
+            continue
 
         product = _find_product(product_id)
         if product is None:
@@ -175,13 +186,16 @@ def compute_bundle_price(
     # 2. The minimum price for margin safety
     bundle_price = max(discounted_price, min_price_for_margin)
 
-    # Round to nearest cent
-    bundle_price = bundle_price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    # Round UP to the cent so the rounding step can never drop us below the
+    # margin floor. (ROUND_HALF_UP previously rounded a floor-bound price DOWN —
+    # a real leak: price 1.00 / cost 0.53 returned 0.96 at 44.79% < 45%.)
+    cent = Decimal("0.01")
+    bundle_price = bundle_price.quantize(cent, rounding=ROUND_CEILING)
 
-    # Ensure we don't exceed max discount
-    max_discount_price = total_regular * Decimal(str(1 - max_discount))
-    if bundle_price < max_discount_price:
-        bundle_price = max_discount_price.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    # Belt-and-suspenders: never emit a price whose realized margin is below floor.
+    floor_dec = Decimal(str(effective_margin_floor))
+    while bundle_price > 0 and (bundle_price - total_cost) / bundle_price < floor_dec:
+        bundle_price += cent
 
     # Calculate actual metrics
     actual_discount = total_regular - bundle_price
