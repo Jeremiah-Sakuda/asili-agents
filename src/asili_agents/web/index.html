@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <!-- Phone-first: lock the viewport so the inbox feels like a native app -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#2A1245" />
+  <meta name="description" content="Asili — the AI ops team that can prove it never lied. Every reply grounded in the seller's live catalog." />
+  <title>Asili · Seller Inbox</title>
+  <!-- Same-origin static assets only. No CDNs, no build step. -->
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <!-- The whole app is a single phone-sized column (max ~430px). -->
+  <main class="phone" id="app" aria-live="polite">
+
+    <!-- 1) HEADER: Asili wordmark + seller name + lane (from /api/seller) -->
+    <header class="appbar" id="appbar">
+      <div class="appbar__brand">
+        <!-- Inline SVG mark (no external logos / trademarks per competition rules) -->
+        <span class="logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" role="img">
+            <!-- Stylized tea leaf in deep violet -->
+            <path d="M12 2C7 5 4 9 4 14c0 4 3 7 8 8 5-1 8-4 8-8 0-5-3-9-8-12z"
+                  fill="currentColor" opacity="0.18"/>
+            <path d="M12 3.2c-3.2 3-5 6.2-5 9.8 0 3 1.7 5.6 5 7.2 0-5.1 1.4-9.4 4.6-13.1C15.3 5.3 13.8 4 12 3.2z"
+                  fill="currentColor"/>
+          </svg>
+        </span>
+        <div class="appbar__titles">
+          <span class="wordmark">Asili</span>
+          <span class="appbar__sub" id="sellerLine">
+            <span class="skeleton skeleton--text" style="width:120px"></span>
+          </span>
+        </div>
+      </div>
+      <span class="lane-pill" id="lanePill" title="Trade lane">
+        <span class="skeleton skeleton--text" style="width:54px"></span>
+      </span>
+    </header>
+
+    <!-- Thin global error banner (network failures, etc.) -->
+    <div class="banner banner--error" id="errorBanner" hidden role="alert"></div>
+
+    <!-- Scrollable conversation + panels -->
+    <section class="scroll" id="scroll">
+
+      <!-- 2) CONVERSATION: inbound customer bubble + primary CTA -->
+      <article class="card thread" id="threadCard" aria-label="Customer conversation">
+        <div class="thread__meta" id="threadMeta">
+          <span class="avatar" id="custAvatar">··</span>
+          <div class="thread__who">
+            <strong id="custName">Loading…</strong>
+            <span class="thread__channel" id="custChannel"></span>
+          </div>
+          <span class="dot dot--live" title="Awaiting reply"></span>
+        </div>
+
+        <!-- Message bubbles get injected here -->
+        <div class="bubbles" id="bubbles">
+          <div class="bubble bubble--in skeleton-bubble">
+            <span class="skeleton skeleton--text" style="width:80%"></span>
+            <span class="skeleton skeleton--text" style="width:55%"></span>
+          </div>
+        </div>
+
+        <!-- Primary action -->
+        <button class="btn btn--primary btn--block" id="draftBtn" disabled>
+          <span class="btn__spark" aria-hidden="true"></span>
+          Draft with Asili
+        </button>
+      </article>
+
+      <!-- 3) ACTIVITY RAIL: streamed agent steps (filled after Draft) -->
+      <article class="card panel" id="railCard" hidden aria-label="Agent activity">
+        <div class="panel__head">
+          <h2 class="panel__title">Agent activity</h2>
+          <span class="panel__tag" id="railTag">live trace</span>
+        </div>
+        <ol class="rail" id="rail"></ol>
+      </article>
+
+      <!-- 3b) DRAFT REPLY: grounded facts + source chips + approve/edit/reject -->
+      <article class="card panel" id="draftCard" hidden aria-label="Drafted reply">
+        <div class="panel__head">
+          <h2 class="panel__title">Asili's draft reply</h2>
+          <span class="panel__tag panel__tag--ok" id="draftStatusTag">pending approval</span>
+        </div>
+
+        <!-- Grounded business facts (from facts[]) -->
+        <div class="facts" id="facts"></div>
+
+        <!-- The composed reply, shown as an outbound bubble -->
+        <div class="draft-bubble" id="draftBubble">
+          <p class="draft-bubble__body" id="draftBody"></p>
+          <div class="sources" id="draftSources"></div>
+        </div>
+
+        <!-- Inline editor (hidden until "Edit") -->
+        <div class="editor" id="editor" hidden>
+          <label class="editor__label" for="editArea">Edit before sending</label>
+          <textarea id="editArea" class="editor__area" rows="4"></textarea>
+        </div>
+
+        <!-- One-tap controls -->
+        <div class="actions" id="draftActions">
+          <button class="btn btn--primary" id="approveBtn">Approve &amp; send</button>
+          <button class="btn btn--ghost" id="editBtn">Edit</button>
+          <button class="btn btn--danger-ghost" id="rejectBtn">Reject</button>
+        </div>
+        <!-- Editor-mode controls (hidden until Edit) -->
+        <div class="actions" id="editActions" hidden>
+          <button class="btn btn--primary" id="sendEditBtn">Send edited</button>
+          <button class="btn btn--ghost" id="cancelEditBtn">Cancel</button>
+        </div>
+
+        <!-- Result toast after an action -->
+        <div class="result" id="approveResult" hidden></div>
+      </article>
+
+      <!-- 4) BASELINE: "What a plain chatbot would send" -->
+      <article class="card panel panel--muted" id="baselineCard" hidden aria-label="Plain chatbot comparison">
+        <div class="panel__head">
+          <h2 class="panel__title">What a plain chatbot would send</h2>
+          <span class="panel__tag panel__tag--bad">no tools · ungrounded</span>
+        </div>
+        <div class="baseline-bubble" id="baselineBubble">
+          <p class="baseline-bubble__body" id="baselineBody"></p>
+          <div class="warnings" id="baselineWarnings"></div>
+        </div>
+        <p class="panel__foot">Single model, no catalog access. It guesses — and the guesses are wrong.</p>
+      </article>
+
+      <!-- 5) TRUST SCORECARD: team vs baseline metrics (/api/eval) -->
+      <article class="card panel" id="scoreCard" aria-label="Trust scorecard">
+        <div class="panel__head">
+          <h2 class="panel__title">Trust Scorecard</h2>
+          <span class="panel__tag" id="scoreTag">adversarial eval</span>
+        </div>
+        <p class="panel__intro">
+          Runs hostile customer scenarios through the team and a naive single-agent baseline,
+          then scores hallucination, margin safety, and groundedness.
+        </p>
+        <button class="btn btn--secondary btn--block" id="evalBtn">Run Trust Scorecard</button>
+        <!-- Scoreboard injected here -->
+        <div class="scoreboard" id="scoreboard" hidden></div>
+        <!-- Per-scenario detail -->
+        <div class="scenarios" id="scenarios" hidden></div>
+      </article>
+
+      <footer class="appfoot">
+        <span>Grounded in the seller's live MongoDB Atlas catalog · prices from a deterministic margin engine</span>
+      </footer>
+    </section>
+  </main>
+
+  <!-- Same-origin script, no modules needed -->
+  <script src="./app.js" defer></script>
+</body>
+</html>
