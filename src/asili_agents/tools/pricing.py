@@ -11,6 +11,11 @@ from typing import Any
 from pydantic import BaseModel
 
 from asili_agents.data.models import Policy, Product
+from asili_agents.data.repository import (
+    StaticCatalogRepository,
+    get_catalog_repository,
+    set_catalog_repository,
+)
 
 
 class BundleItem(BaseModel):
@@ -36,33 +41,23 @@ class BundlePriceResult(BaseModel):
     rationale: str
 
 
-# In-memory stores (populated from seed data)
-_product_store: dict[str, Product] = {}
-_policy: Policy | None = None
-
-
 def set_pricing_context(products: list[Product], policy: Policy) -> None:
     """Initialize the pricing context with catalog and policy data.
+
+    Kept for backwards compatibility (tests, local dev, API startup). Builds a
+    :class:`StaticCatalogRepository` so the pricing tool and the catalog tools
+    share one source of truth.
 
     Args:
         products: List of products for price lookups.
         policy: Business policy including margin floor.
     """
-    global _product_store, _policy
-    _product_store = {str(p.id): p for p in products}
-    # Also index by SKU and name
-    for p in products:
-        _product_store[p.sku.lower()] = p
-        _product_store[p.name.lower()] = p
-    _policy = policy
+    set_catalog_repository(StaticCatalogRepository(products, policy))
 
 
 def _find_product(identifier: str) -> Product | None:
-    """Find a product by ID, SKU, or name."""
-    product = _product_store.get(identifier.lower())
-    if product is None:
-        product = _product_store.get(identifier)
-    return product
+    """Find a product by ID, SKU, or name via the active repository."""
+    return get_catalog_repository().get_product(identifier)
 
 
 def compute_bundle_price(
@@ -103,20 +98,23 @@ def compute_bundle_price(
             "is_margin_safe": False,
         }
 
+    # Resolve policy from the active repository.
+    policy = get_catalog_repository().get_policy()
+
     # Use policy margin floor if not specified
     effective_margin_floor = margin_floor
     if effective_margin_floor is None:
-        if _policy is not None:
-            effective_margin_floor = _policy.margin_floor
+        if policy is not None:
+            effective_margin_floor = policy.margin_floor
         else:
             effective_margin_floor = 0.45  # Default 45%
 
     # Get discount limits from policy
     bundle_discount = 0.05  # Default 5%
     max_discount = 0.10  # Default 10%
-    if _policy is not None:
-        bundle_discount = _policy.bundle_discount_percent
-        max_discount = _policy.max_bundle_discount_percent
+    if policy is not None:
+        bundle_discount = policy.bundle_discount_percent
+        max_discount = policy.max_bundle_discount_percent
 
     # Calculate totals
     total_regular = Decimal("0")
