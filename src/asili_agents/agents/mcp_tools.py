@@ -36,14 +36,19 @@ MCP_GROUNDING_INSTRUCTION = """
 You read the seller's live data from MongoDB through the MongoDB MCP tools
 (`find`, `aggregate`, `count`). Treat MongoDB as the single source of truth.
 
-- The catalog lives in the `products` collection. Each document has:
+- **Database: `asili`.** Always pass `database: "asili"` to the MongoDB tools.
+- The catalog is the **`products`** collection. Each document has:
   `sku`, `name`, `description`, `category`, `origin`, `price`, `cost`,
   `stock_quantity`, `low_stock_threshold`, `unit`.
-- Business rules live in the `policy` collection (`margin_floor`, discount bands).
-- To answer a product or stock question, `find` the matching document(s) FIRST,
-  then answer using only what you read. Never state a price, a stock number, or a
-  product detail you did not just read from MongoDB.
-- If `find` returns nothing, say the product isn't in the catalog — do not guess.
+- Business rules are in the **`policy`** collection (`margin_floor`, discount bands).
+- Match products **case-insensitively** — prefer a regex filter, e.g.
+  `find(database="asili", collection="products",
+  filter={"name": {"$regex": "purple", "$options": "i"}})`.
+  If a targeted search returns nothing, `find` the whole `products` collection
+  (empty filter) and pick the match yourself before concluding it's absent.
+- Answer using ONLY what you read. Never state a price, a stock number, or a
+  product detail you did not just read from MongoDB. Only after a broad search
+  finds nothing, say the product isn't in the catalog — do not guess.
 """
 
 
