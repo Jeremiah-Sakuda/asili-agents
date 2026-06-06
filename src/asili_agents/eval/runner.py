@@ -145,3 +145,108 @@ def build_live_reply_fns(
         return {"text": text, "retrieved": False}
 
     return team_reply, baseline_reply
+
+
+# ---------------------------------------------------------------------------
+# Async variants (used by the FastAPI /api/eval endpoint so the MongoDB MCP
+# stdio session shares the request's event loop).
+# ---------------------------------------------------------------------------
+
+_READ_TOOLS = {
+    "catalog_search",
+    "check_stock",
+    "get_costs",
+    "find",
+    "aggregate",
+    "count",
+    "list-collections",
+    "collection-schema",
+}
+
+
+async def score_system_async(
+    scenarios: list[Scenario],
+    products: list[Product],
+    policy: Policy | None,
+    reply_fn: Any,
+) -> dict[str, Any]:
+    """Async counterpart of :func:`score_system` (awaits each reply)."""
+    by_sku = {p.sku: p for p in products}
+    scenario_results: list[dict[str, Any]] = []
+    scores = []
+
+    for scenario in scenarios:
+        product = by_sku.get(scenario.target_sku)
+        raw = await reply_fn(scenario.prompt)
+        reply = raw.get("text") if isinstance(raw, dict) else raw
+        retrieved = raw.get("retrieved") if isinstance(raw, dict) else None
+        if product is None:
+            continue
+        score = evaluate_reply(reply, product=product, policy=policy, retrieved=retrieved)
+        scores.append(score)
+        scenario_results.append(
+            {
+                "id": scenario.id,
+                "prompt": scenario.prompt,
+                "kind": scenario.kind,
+                "passed": score.passed,
+                "grounded": score.grounded,
+                "retrieved": retrieved,
+                "issues": score.issues,
+                "reply": reply,
+            }
+        )
+
+    return {**aggregate(scores), "scenarios": scenario_results}
+
+
+async def run_scorecard_async(
+    products: list[Product],
+    policy: Policy | None,
+    *,
+    team_reply_fn: Any,
+    baseline_reply_fn: Any,
+    scenarios: list[Scenario] | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Async counterpart of :func:`run_scorecard`."""
+    selected = scenarios if scenarios is not None else SCENARIOS
+    if limit is not None:
+        selected = selected[:limit]
+    team = await score_system_async(selected, products, policy, team_reply_fn)
+    baseline = await score_system_async(selected, products, policy, baseline_reply_fn)
+    return {"team": team, "baseline": baseline, "summary": _summary(team, baseline)}
+
+
+def build_live_reply_fns_async(
+    seller: Seller,
+    products: list[Product],
+    policy: Policy,
+    *,
+    repository: Any | None = None,
+    use_mcp: bool | None = None,
+) -> tuple[Any, Any]:
+    """Async reply functions backed by the async ADK runners (MCP-safe)."""
+    from asili_agents.runner import (
+        create_baseline_runner,
+        create_runner,
+        run_agent_async,
+        run_baseline_async,
+    )
+
+    async def team_reply(prompt: str) -> dict[str, Any]:
+        runner = create_runner(seller, products, policy, repository=repository, use_mcp=use_mcp)
+        result = await run_agent_async(runner, prompt)
+        retrieved = any(
+            bool(step.grounded_facts)
+            or any((tc.get("name") in _READ_TOOLS) for tc in (step.tool_calls or []))
+            for step in result.steps
+        )
+        return {"text": result.draft, "retrieved": retrieved}
+
+    async def baseline_reply(prompt: str) -> dict[str, Any]:
+        runner = create_baseline_runner(seller, products)
+        text, _ = await run_baseline_async(runner, prompt)
+        return {"text": text, "retrieved": False}
+
+    return team_reply, baseline_reply
