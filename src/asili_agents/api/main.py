@@ -8,6 +8,7 @@ This API provides:
 """
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,8 @@ from asili_agents.tools.pricing import compute_bundle_price, set_pricing_context
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
+logger = logging.getLogger("asili.api")
+
 # Application state
 _state: dict[str, Any] = {}
 
@@ -52,6 +55,7 @@ async def lifespan(app: FastAPI):
     products, policy = demo_products, demo_policy
     repository = None
     use_mcp = False
+    data_source = "demo"
 
     if settings.mongodb_uri:
         try:
@@ -60,20 +64,40 @@ async def lifespan(app: FastAPI):
             repository = MongoCatalogRepository(settings.mongodb_uri, settings.mongodb_database)
             mongo_products = repository.all_products()
             mongo_policy = repository.get_policy()
-            if mongo_products:
-                products = mongo_products
+            if not mongo_products:
+                raise RuntimeError(
+                    f"MongoDB connected but database {settings.mongodb_database!r} has no "
+                    "products — run scripts/seed_atlas.py."
+                )
+            products = mongo_products
             if mongo_policy is not None:
                 policy = mongo_policy
             set_catalog_repository(repository)
             use_mcp = settings.use_mcp
-        except Exception:
-            # Atlas unreachable/misconfigured — fall back to the demo seed.
+            data_source = "atlas"
+            logger.info(
+                "MongoDB Atlas connected: %d products in %r; MCP grounding=%s",
+                len(products),
+                settings.mongodb_database,
+                use_mcp,
+            )
+        except Exception as exc:
+            # Do NOT silently serve demo data on the graded path — log loudly.
+            logger.error(
+                "MongoDB Atlas connection FAILED (%s: %s) — serving DEMO seed (NOT live "
+                "grounded). Fix: in Atlas, set Network Access to allow 0.0.0.0/0 so Cloud Run "
+                "can connect, confirm the MONGODB_URI secret, and run scripts/seed_atlas.py.",
+                type(exc).__name__,
+                exc,
+            )
             repository = None
             use_mcp = False
+            data_source = "demo"
             products, policy = demo_products, demo_policy
             set_product_store(products)
             set_pricing_context(products, policy)
     else:
+        logger.warning("MONGODB_URI not set — serving demo seed (no MongoDB, no MCP grounding).")
         set_product_store(products)
         set_pricing_context(products, policy)
 
@@ -82,6 +106,7 @@ async def lifespan(app: FastAPI):
     _state["policy"] = policy
     _state["repository"] = repository
     _state["use_mcp"] = use_mcp
+    _state["data_source"] = data_source
     _state["conversations"] = {}
     _state["pending_drafts"] = {}  # conversation_id -> draft info
     _state["runners"] = {}  # conversation_id -> runner
@@ -249,11 +274,14 @@ class ApprovalResponse(BaseModel):
 
 @app.get("/")
 async def root():
-    """Health check endpoint."""
+    """Health check endpoint, with data-source visibility for verification."""
     return {
         "service": "Asili Operations Team",
         "version": "0.1.0",
         "status": "healthy",
+        "data_source": _state.get("data_source", "demo"),
+        "mcp_grounding": bool(_state.get("use_mcp", False)),
+        "products_loaded": len(_state.get("products", [])),
     }
 
 
