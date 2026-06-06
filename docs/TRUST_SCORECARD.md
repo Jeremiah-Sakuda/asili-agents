@@ -279,7 +279,7 @@ If the baseline replies *"Thanks so much for reaching out, we appreciate your bu
 POST /api/eval?limit=6
 ```
 
-Defined in `src/asili_agents/api/main.py` (`run_trust_scorecard`). `limit` (default **6**) bounds how many scenarios run live, because each scenario issues **real Gemini calls** through the ADK runners — the live path needs API credentials and is intended for the deployed/graded demo, not CI. The endpoint serializes against `/api/run` via an internal lock (`_run_lock`) and offloads the synchronous runners to a worker thread so the process-global decision log doesn't interleave. It requires the demo data to be initialized (`seller` and `policy` in `_state`), else returns HTTP 500 *"Demo data not initialized"*.
+Defined in `src/asili_agents/api/main.py` (`run_trust_scorecard`). `limit` (default **6**) bounds how many scenarios run live, because each scenario issues **real Gemini calls** through the ADK runners — the live path needs API credentials and is intended for the deployed/graded demo, not CI. The endpoint serializes against `/api/run` via an internal lock (`_run_lock`) and runs on the request's event loop via the async scorecard (`run_scorecard_async`) so the process-global decision log doesn't interleave. It requires the demo data to be initialized (`seller` and `policy` in `_state`), else returns HTTP 500 *"Demo data not initialized"*.
 
 ```bash
 # Run the first 6 scenarios live (team vs baseline)

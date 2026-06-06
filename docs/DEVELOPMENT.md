@@ -95,7 +95,7 @@ asili-agents serve --port 8000 --reload  # dev: custom port + auto-reload
 | `POST /api/reset` | Reset demo state (clears log, conversations, drafts). |
 | `POST /api/eval?limit=6` | **Trust Scorecard**: team vs baseline across adversarial scenarios. |
 
-> Agent runs are serialized behind a process-global `asyncio.Lock` (`_run_lock`) because the decision log and the tool repository are process-global. `/api/run` and `/api/eval` therefore won't interleave each other's steps. The synchronous ADK runners (which call `asyncio.run` internally) are offloaded via `asyncio.to_thread`.
+> Agent runs are serialized behind a process-global `asyncio.Lock` (`_run_lock`) because the decision log and the tool repository are process-global, so `/api/run` and `/api/eval` won't interleave each other's steps. The server drives the agents with the **async** runners (`run_agent_async` / `run_baseline_async`, and `run_scorecard_async`) directly on the request's event loop — required so the MongoDB MCP server's stdio session shares that loop. The synchronous `run_agent` / `run_baseline` remain for local dev and tests.
 
 ---
 
@@ -123,7 +123,7 @@ asili-agents/
 │   ├── config.py               # Pydantic-settings `Settings` + cached `get_settings()`
 │   ├── cli.py                  # argparse CLI: `demo` and `serve` subcommands
 │   ├── demo.py                 # Scripted-but-real demo: team run vs baseline run, formatted to stdout
-│   ├── runner.py               # ADK `InMemoryRunner` integration; `create_runner`, `run_agent`, baseline equivalents; `RunResult`/`AgentStep`
+│   ├── runner.py               # ADK `InMemoryRunner`; `create_runner`, `run_agent`(+`run_agent_async`), baseline equivalents; `RunResult`/`AgentStep`
 │   ├── agents/
 │   │   ├── __init__.py         # Re-exports the four create_* factories
 │   │   ├── operations_manager.py  # Root orchestrator `Agent` with Messaging+Pricing sub-agents
@@ -360,10 +360,11 @@ The production image (`Dockerfile`) is **Python 3.11-slim + Node 20** (Node is c
 ./scripts/deploy.sh
 # Builds + pushes the image to Artifact Registry, then `gcloud run deploy`.
 # Sets GOOGLE_GENAI_USE_VERTEXAI=true (Vertex AI auth via the Cloud Run service account).
-# If a Secret Manager secret `asili-mongodb-uri` exists, it attaches MONGODB_URI and deploys
-# with USE_MCP=true, MCP_READ_ONLY=true, DEMO_MODE=false (live grounding).
-# Otherwise it deploys with USE_MCP=false, DEMO_MODE=true (in-process seed).
-# Cloud Run: 512Mi / 1 CPU, min-instances 0, max-instances 10, unauthenticated.
+# Attaches MONGODB_URI from the Secret Manager secret `asili-mongodb-uri` and deploys with
+# USE_MCP=true, MCP_READ_ONLY=true, DEMO_MODE=false (live Atlas + MCP grounding).
+# Cloud Run: 2Gi / 2 CPU, 600s timeout, startup CPU boost, min-instances 1, max-instances 5,
+#   unauthenticated. The MCP server spawns a Node subprocess, so the service needs headroom
+#   and one warm instance to keep responses snappy.
 ```
 
 ### CI/CD deploy

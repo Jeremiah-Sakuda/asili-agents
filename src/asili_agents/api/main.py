@@ -7,7 +7,6 @@ This API provides:
 4. Demo runner
 """
 
-import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -47,12 +46,6 @@ logger = logging.getLogger("asili.api")
 
 # Application state
 _state: dict[str, Any] = {}
-
-# The decision log and the tool repository are process-global, so agent runs are
-# serialized to prevent /api/run and /api/eval from interleaving each other's
-# steps. Demo-scale tradeoff (one run at a time); a per-run context would be the
-# next step for true concurrency.
-_run_lock = asyncio.Lock()
 
 
 @asynccontextmanager
@@ -157,8 +150,11 @@ app = FastAPI(
 # CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure properly in production
-    allow_credentials=True,
+    # The web UI is same-origin; we expose a read-only public demo API and use no
+    # cookies/credentials, so allow any origin but NOT credentials (the
+    # `*` + allow_credentials=True combination is an unsafe, browser-rejected mix).
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -360,43 +356,41 @@ async def get_business_facts() -> list[BusinessFactResponse]:
     facts = []
 
     # Find the Purple Tea product for the demo scenario
-    purple_tea = next((p for p in products if "purple" in p.name.lower()), None)
+    focus = _focus_product(products)
 
-    if purple_tea and policy:
+    if focus and policy:
         facts.extend(
             [
                 BusinessFactResponse(
                     id="product",
                     key="Product",
-                    value=purple_tea.name,
-                    sub=f"{purple_tea.origin}",
+                    value=focus.name,
+                    sub=f"{focus.origin}",
                 ),
                 BusinessFactResponse(
                     id="price",
                     key="Unit price",
-                    value=f"${purple_tea.price:.2f}",
-                    sub=f"per {purple_tea.unit}",
+                    value=f"${focus.price:.2f}",
+                    sub=f"per {focus.unit}",
                 ),
                 BusinessFactResponse(
                     id="cost",
                     key="Unit cost",
-                    value=f"${purple_tea.cost:.2f}",
+                    value=f"${focus.cost:.2f}",
                     sub="landed",
                 ),
                 BusinessFactResponse(
                     id="margin",
                     key="Unit margin",
-                    value=f"${purple_tea.margin:.2f}",
-                    sub=f"{int(purple_tea.margin_percent * 100)}% · floor {int(policy.margin_floor * 100)}%",
+                    value=f"${focus.margin:.2f}",
+                    sub=f"{int(focus.margin_percent * 100)}% · floor {int(policy.margin_floor * 100)}%",
                 ),
                 BusinessFactResponse(
                     id="stock",
                     key="In stock",
-                    value=f"{purple_tea.stock_quantity} {purple_tea.unit}s",
-                    sub="Low · reorder soon"
-                    if purple_tea.stock_level.value == "low"
-                    else "Healthy",
-                    tone="signal" if purple_tea.stock_level.value == "low" else "default",
+                    value=f"{focus.stock_quantity} {focus.unit}s",
+                    sub="Low · reorder soon" if focus.stock_level.value == "low" else "Healthy",
+                    tone="signal" if focus.stock_level.value == "low" else "default",
                 ),
             ]
         )
@@ -497,18 +491,18 @@ async def run_agents(request: RunAgentsRequest) -> RunAgentsResponse:
             raise HTTPException(status_code=400, detail="No customer message found")
         customer_message = inbound_messages[-1].body
 
-    # Serialize agent runs (process-global decision log + tool repository) and run
-    # on this event loop so the MongoDB MCP stdio session shares it.
-    async with _run_lock:
-        runner = create_runner(
-            seller,
-            products,
-            policy,
-            repository=_state.get("repository"),
-            use_mcp=_state.get("use_mcp"),
-        )
-        _state["runners"][request.conversation_id] = runner
-        result = await run_agent_async(runner, customer_message)
+    # Each request is its own asyncio task, so the per-run decision log (a
+    # ContextVar) isolates concurrent runs without a process-wide lock. Runs on
+    # this event loop so the MongoDB MCP stdio session shares it.
+    runner = create_runner(
+        seller,
+        products,
+        policy,
+        repository=_state.get("repository"),
+        use_mcp=_state.get("use_mcp"),
+    )
+    _state["runners"][request.conversation_id] = runner
+    result = await run_agent_async(runner, customer_message)
 
     if not result.success:
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {result.error}")
@@ -687,17 +681,24 @@ async def run_trust_scorecard(limit: int = 6) -> dict[str, Any]:
         repository=_state.get("repository"),
         use_mcp=_state.get("use_mcp"),
     )
-    # Serialize against /api/run via _run_lock so the process-global decision log
-    # doesn't interleave; run on this event loop so MCP stdio sessions work.
-    async with _run_lock:
-        result = await run_scorecard_async(
-            products,
-            policy,
-            team_reply_fn=team_fn,
-            baseline_reply_fn=baseline_fn,
-            limit=limit,
-        )
+    # Per-run decision log is a ContextVar, so no global lock is needed; runs on
+    # this event loop so the MCP stdio sessions work.
+    result = await run_scorecard_async(
+        products,
+        policy,
+        team_reply_fn=team_fn,
+        baseline_reply_fn=baseline_fn,
+        limit=limit,
+    )
     return result
+
+
+def _focus_product(products: list[Product]) -> Product | None:
+    """The product to surface in the UI fact cards: the first low-stock item (the
+    kind that needs attention), else the first product. (Generalized from a
+    Purple-Tea hardcode so the panel works for any seeded catalog.)"""
+    low = next((p for p in products if p.stock_level.value == "low"), None)
+    return low or (products[0] if products else None)
 
 
 def _get_grounded_facts_for_response(
@@ -707,14 +708,14 @@ def _get_grounded_facts_for_response(
     facts = []
 
     # Find the Purple Tea product (demo scenario focus)
-    purple_tea = next((p for p in products if "purple" in p.name.lower()), None)
+    focus = _focus_product(products)
 
-    if purple_tea:
+    if focus:
         # Get real data from tools
-        stock_info = check_stock(str(purple_tea.id))
-        cost_info = get_costs(str(purple_tea.id))
+        stock_info = check_stock(str(focus.id))
+        cost_info = get_costs(str(focus.id))
         bundle_result = compute_bundle_price(
-            items=[{"product_id": str(purple_tea.id), "quantity": 2}],
+            items=[{"product_id": str(focus.id), "quantity": 2}],
             margin_floor=policy.margin_floor,
         )
 
@@ -723,14 +724,14 @@ def _get_grounded_facts_for_response(
                 BusinessFactResponse(
                     id="product",
                     key="Product",
-                    value=purple_tea.name,
-                    sub=purple_tea.origin,
+                    value=focus.name,
+                    sub=focus.origin,
                 ),
                 BusinessFactResponse(
                     id="price",
                     key="Unit price",
-                    value=f"${purple_tea.price:.2f}",
-                    sub=f"per {purple_tea.unit}",
+                    value=f"${focus.price:.2f}",
+                    sub=f"per {focus.unit}",
                 ),
                 BusinessFactResponse(
                     id="cost",
@@ -747,7 +748,7 @@ def _get_grounded_facts_for_response(
                 BusinessFactResponse(
                     id="stock",
                     key="In stock",
-                    value=f"{stock_info.get('quantity', 0)} {purple_tea.unit}s",
+                    value=f"{stock_info.get('quantity', 0)} {focus.unit}s",
                     sub="Low - reorder soon" if stock_info.get("level") == "low" else "Healthy",
                     tone="signal" if stock_info.get("level") == "low" else "default",
                 ),

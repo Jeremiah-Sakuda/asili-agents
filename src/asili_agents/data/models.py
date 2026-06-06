@@ -226,7 +226,7 @@ class Conversation(BaseModel):
             **kwargs,
         )
         self.messages.append(message)
-        self.updated_at = datetime.utcnow()
+        self.updated_at = datetime.now(UTC)
         return message
 
 
