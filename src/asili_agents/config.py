@@ -60,6 +60,32 @@ class Settings(BaseSettings):
         description="Database connection URL",
     )
 
+    # MongoDB (system of record + MCP grounding)
+    mongodb_uri: str | None = Field(
+        default=None,
+        description="MongoDB Atlas connection string (SRV URI). Required when use_mcp is True.",
+    )
+    mongodb_database: str = Field(
+        default="asili",
+        description="MongoDB database name",
+    )
+    use_mcp: bool = Field(
+        default=False,
+        description=(
+            "Route the agents' catalog/stock reads through the MongoDB MCP server "
+            "(npx mongodb-mcp-server). When False, agents use the in-process repository "
+            "(used for local dev and tests)."
+        ),
+    )
+    mcp_read_only: bool = Field(
+        default=True,
+        description="Run the MongoDB MCP server with --readOnly (agents never write via MCP).",
+    )
+    mcp_server_command: str = Field(
+        default="npx",
+        description="Command used to launch the MongoDB MCP server.",
+    )
+
     # API
     api_host: str = Field(default="0.0.0.0")
     api_port: int = Field(default=8080)
