@@ -39,10 +39,6 @@ class Settings(BaseSettings):
     )
 
     # Vertex AI
-    vertex_search_datastore_id: str | None = Field(
-        default=None,
-        description="Vertex AI Search datastore ID for catalog grounding",
-    )
     gemini_model: str = Field(
         default="gemini-2.5-flash",
         description="Gemini model to use for agents (Vertex AI serves the 2.5 series)",
