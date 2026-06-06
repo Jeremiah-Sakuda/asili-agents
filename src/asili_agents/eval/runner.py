@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from asili_agents.agents.mcp_tools import READ_TOOL_NAMES
 from asili_agents.data.models import Policy, Product, Seller
 from asili_agents.eval.scenarios import SCENARIOS, Scenario
 from asili_agents.eval.scoring import aggregate, evaluate_reply
@@ -113,19 +114,6 @@ def build_live_reply_fns(
         run_baseline,
     )
 
-    # Precise set of read tools (in-process + MongoDB MCP). retrieved is based on
-    # an ACTUAL call to one of these, not a substring of the reasoning trace.
-    read_tools = {
-        "catalog_search",
-        "check_stock",
-        "get_costs",
-        "find",
-        "aggregate",
-        "count",
-        "list-collections",
-        "collection-schema",
-    }
-
     def team_reply(prompt: str) -> dict[str, Any]:
         runner = create_runner(seller, products, policy, repository=repository, use_mcp=use_mcp)
         result = run_agent(runner, prompt)
@@ -133,7 +121,7 @@ def build_live_reply_fns(
         # (or logged grounded facts) — not merely mentioned one in prose.
         retrieved = any(
             bool(step.grounded_facts)
-            or any((tc.get("name") in read_tools) for tc in (step.tool_calls or []))
+            or any((tc.get("name") in READ_TOOL_NAMES) for tc in (step.tool_calls or []))
             for step in result.steps
         )
         return {"text": result.draft, "retrieved": retrieved}
@@ -151,17 +139,6 @@ def build_live_reply_fns(
 # Async variants (used by the FastAPI /api/eval endpoint so the MongoDB MCP
 # stdio session shares the request's event loop).
 # ---------------------------------------------------------------------------
-
-_READ_TOOLS = {
-    "catalog_search",
-    "check_stock",
-    "get_costs",
-    "find",
-    "aggregate",
-    "count",
-    "list-collections",
-    "collection-schema",
-}
 
 
 async def score_system_async(
@@ -239,7 +216,7 @@ def build_live_reply_fns_async(
         result = await run_agent_async(runner, prompt)
         retrieved = any(
             bool(step.grounded_facts)
-            or any((tc.get("name") in _READ_TOOLS) for tc in (step.tool_calls or []))
+            or any((tc.get("name") in READ_TOOL_NAMES) for tc in (step.tool_calls or []))
             for step in result.steps
         )
         return {"text": result.draft, "retrieved": retrieved}

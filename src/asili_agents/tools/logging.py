@@ -6,6 +6,7 @@ Every agent decision is logged for:
 3. Audit trail and compliance
 """
 
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
@@ -27,23 +28,29 @@ class DecisionLogEntry(BaseModel):
     timestamp: datetime
 
 
-# In-memory log store (for demo)
-_decision_log: list[AgentDecision] = []
+# Per-run decision log, isolated via a ContextVar so concurrent agent runs (each
+# request is its own asyncio task with its own context) don't interleave each
+# other's steps — which is what lets the API run without a process-wide lock.
+_decision_log: ContextVar[list[AgentDecision] | None] = ContextVar("decision_log", default=None)
+
+
+def _current_log() -> list[AgentDecision]:
+    """Return the current context's decision log, creating it on first use."""
+    log = _decision_log.get()
+    if log is None:
+        log = []
+        _decision_log.set(log)
+    return log
 
 
 def get_decision_log() -> list[AgentDecision]:
-    """Get all logged decisions.
-
-    Returns:
-        List of all agent decisions in chronological order.
-    """
-    return _decision_log.copy()
+    """Get all logged decisions for the current run, in chronological order."""
+    return list(_current_log())
 
 
 def clear_decision_log() -> None:
-    """Clear the decision log. Used for demo resets."""
-    global _decision_log
-    _decision_log = []
+    """Start a fresh decision log for the current run/context."""
+    _decision_log.set([])
 
 
 def log_decision(
@@ -113,7 +120,7 @@ def log_decision(
         timestamp=datetime.now(UTC),
     )
 
-    _decision_log.append(decision)
+    _current_log().append(decision)
 
     return DecisionLogEntry(
         id=str(decision.id),

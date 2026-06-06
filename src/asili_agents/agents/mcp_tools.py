@@ -29,6 +29,10 @@ MONGODB_MCP_READ_TOOLS = [
     "collection-schema",
 ]
 
+# In-process + MCP read tools, used to detect whether a run actually retrieved
+# from the catalog (vs produced fluent text). Superset of MONGODB_MCP_READ_TOOLS.
+READ_TOOL_NAMES = {"catalog_search", "check_stock", "get_costs", *MONGODB_MCP_READ_TOOLS}
+
 # Instruction snippet appended to an agent's prompt when it is MCP-grounded.
 MCP_GROUNDING_INSTRUCTION = """
 ## Data access — MongoDB (read-only, via MCP)

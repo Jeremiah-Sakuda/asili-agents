@@ -255,6 +255,16 @@ If a claim here isn't true in the code, that's a bug, and we'd rather fix it tha
 
 ---
 
+## Roadmap / out of scope
+
+The build deliberately focuses on the seller-facing operations agents and the deterministic trust core. Intentionally **not** built yet:
+
+- **Channel integration (Instagram / WhatsApp / Telegram DMs).** Today the seller works in the web console; connecting the DM channels where sellers actually operate is the next major step. (Telegram is a straightforward lift from the broader Asili codebase; WhatsApp/Instagram are gated on Meta Business approval.)
+- **Atlas write-back / audit history.** Trust artifacts (drafts, decisions, eval runs) are returned at runtime but not yet persisted back to Atlas over time.
+- **Richer pricing** (shipping, FX on the KE→US lane, tiered promos) beyond the single 45% margin floor + flat bundle discount.
+
+---
+
 ## Documentation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — system design, the runtime diagram, and honest implementation status
