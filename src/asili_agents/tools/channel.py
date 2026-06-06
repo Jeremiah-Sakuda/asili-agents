@@ -5,7 +5,7 @@ message delivery to the customer.
 """
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -108,7 +108,7 @@ def send_for_approval(
         ... )
         {"status": "approved", "body": "Yes, we have Purple Tea in stock!", ...}
     """
-    draft_id = f"draft_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    draft_id = f"draft_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
 
     if _approval_callback is not None:
         result = _approval_callback(draft_id, draft_body)
@@ -119,7 +119,7 @@ def send_for_approval(
         status=ApprovalStatus.APPROVED,
         draft_id=draft_id,
         body=draft_body,
-        approved_at=datetime.utcnow(),
+        approved_at=datetime.now(UTC),
         approved_by="demo_auto_approve",
     ).model_dump()
 
@@ -153,9 +153,9 @@ def channel_send(
     # Default: simulate successful send
     return SendResult(
         success=True,
-        message_id=f"msg_{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
+        message_id=f"msg_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}",
         channel=channel,
-        sent_at=datetime.utcnow(),
+        sent_at=datetime.now(UTC),
         body=body,
     ).model_dump()
 

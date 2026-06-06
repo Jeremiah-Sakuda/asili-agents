@@ -6,7 +6,7 @@ Every agent decision is logged for:
 3. Audit trail and compliance
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -110,7 +110,7 @@ def log_decision(
         model_used=model_used,
         tokens_used=tokens_used,
         latency_ms=latency_ms,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(UTC),
     )
 
     _decision_log.append(decision)

@@ -44,18 +44,6 @@ class Settings(BaseSettings):
         description="Gemini model to use for agents (Vertex AI serves the 2.5 series)",
     )
 
-    # Telegram
-    telegram_bot_token: str | None = Field(
-        default=None,
-        description="Telegram bot token for channel integration",
-    )
-
-    # Database
-    database_url: str = Field(
-        default="sqlite+aiosqlite:///./asili_agents.db",
-        description="Database connection URL",
-    )
-
     # MongoDB (system of record + MCP grounding)
     mongodb_uri: str | None = Field(
         default=None,

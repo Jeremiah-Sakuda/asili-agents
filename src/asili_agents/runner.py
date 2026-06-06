@@ -170,7 +170,7 @@ def run_agent(
     session_id = session_id or f"session_{uuid.uuid4().hex[:8]}"
 
     # Create session first (required by InMemoryRunner)
-    async def create_session():
+    async def create_session() -> Any:
         return await runner.session_service.create_session(
             app_name=runner.app_name,
             user_id=user_id,
@@ -285,7 +285,7 @@ def run_baseline(
     session_id = session_id or f"session_{uuid.uuid4().hex[:8]}"
 
     # Create session first (required by InMemoryRunner)
-    async def create_session():
+    async def create_session() -> Any:
         return await runner.session_service.create_session(
             app_name=runner.app_name,
             user_id=user_id,
@@ -335,7 +335,10 @@ def _event_to_dict(event: Event) -> dict[str, Any]:
                 {
                     "text": p.text if p.text else None,
                     "function_call": (
-                        {"name": p.function_call.name, "args": dict(p.function_call.args)}
+                        {
+                            "name": p.function_call.name,
+                            "args": dict(p.function_call.args) if p.function_call.args else {},
+                        }
                         if p.function_call
                         else None
                     ),
