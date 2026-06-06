@@ -29,8 +29,13 @@ from asili_agents.data.models import (
 )
 from asili_agents.data.repository import set_catalog_repository
 from asili_agents.data.seed import get_demo_seller
-from asili_agents.eval.runner import build_live_reply_fns, run_scorecard
-from asili_agents.runner import create_baseline_runner, create_runner, run_agent, run_baseline
+from asili_agents.eval.runner import build_live_reply_fns_async, run_scorecard_async
+from asili_agents.runner import (
+    create_baseline_runner,
+    create_runner,
+    run_agent_async,
+    run_baseline_async,
+)
 from asili_agents.tools.catalog import check_stock, get_costs, set_product_store
 from asili_agents.tools.channel import ApprovalResult, ApprovalStatus, set_approval_callback
 from asili_agents.tools.logging import clear_decision_log, get_decision_log
@@ -492,9 +497,8 @@ async def run_agents(request: RunAgentsRequest) -> RunAgentsResponse:
             raise HTTPException(status_code=400, detail="No customer message found")
         customer_message = inbound_messages[-1].body
 
-    # Serialize agent runs (process-global decision log + tool repository).
-    # run_agent() is synchronous and uses asyncio.run() internally, so it runs in
-    # a worker thread to avoid a nested event loop inside this async endpoint.
+    # Serialize agent runs (process-global decision log + tool repository) and run
+    # on this event loop so the MongoDB MCP stdio session shares it.
     async with _run_lock:
         runner = create_runner(
             seller,
@@ -504,7 +508,7 @@ async def run_agents(request: RunAgentsRequest) -> RunAgentsResponse:
             use_mcp=_state.get("use_mcp"),
         )
         _state["runners"][request.conversation_id] = runner
-        result = await asyncio.to_thread(run_agent, runner, customer_message)
+        result = await run_agent_async(runner, customer_message)
 
     if not result.success:
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {result.error}")
@@ -582,11 +586,9 @@ async def run_baseline_agent(request: RunAgentsRequest) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail="No customer message found")
         customer_message = inbound_messages[-1].body
 
-    # Create and run the baseline agent
+    # Create and run the baseline agent (async, on this event loop)
     baseline_runner = create_baseline_runner(seller, products)
-    response_text, raw_events = await asyncio.to_thread(
-        run_baseline, baseline_runner, customer_message
-    )
+    response_text, raw_events = await run_baseline_async(baseline_runner, customer_message)
 
     return {
         "response": response_text,
@@ -678,19 +680,17 @@ async def run_trust_scorecard(limit: int = 6) -> dict[str, Any]:
     if not seller or not policy:
         raise HTTPException(status_code=500, detail="Demo data not initialized")
 
-    team_fn, baseline_fn = build_live_reply_fns(
+    team_fn, baseline_fn = build_live_reply_fns_async(
         seller,
         products,
         policy,
         repository=_state.get("repository"),
         use_mcp=_state.get("use_mcp"),
     )
-    # run_scorecard drives synchronous ADK runners (asyncio.run internally), so
-    # offload it to a worker thread; serialize against /api/run via _run_lock so
-    # the process-global decision log doesn't interleave.
+    # Serialize against /api/run via _run_lock so the process-global decision log
+    # doesn't interleave; run on this event loop so MCP stdio sessions work.
     async with _run_lock:
-        result = await asyncio.to_thread(
-            run_scorecard,
+        result = await run_scorecard_async(
             products,
             policy,
             team_reply_fn=team_fn,

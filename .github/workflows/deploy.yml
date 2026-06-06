@@ -61,21 +61,18 @@ jobs:
 
       - name: Deploy to Cloud Run
         run: |
-          # Attach the MongoDB connection string from Secret Manager + enable MCP
-          # grounding when the secret exists; otherwise deploy in demo mode.
-          SECRET_FLAG=""
-          MCP_ENV="USE_MCP=false,DEMO_MODE=true"
-          if gcloud secrets describe asili-mongodb-uri >/dev/null 2>&1; then
-            SECRET_FLAG="--set-secrets=MONGODB_URI=asili-mongodb-uri:latest"
-            MCP_ENV="USE_MCP=true,MCP_READ_ONLY=true,DEMO_MODE=false"
-          fi
+          # The MongoDB connection string lives in Secret Manager as
+          # `asili-mongodb-uri`. MCP grounding is enabled unconditionally; the
+          # MCP server spawns a Node subprocess, so the service gets 2 CPU / 2Gi,
+          # a long timeout, startup CPU boost, and one warm instance.
           gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
             --platform managed \
             --region ${{ env.REGION }} \
             --allow-unauthenticated \
-            --set-env-vars "GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},GOOGLE_CLOUD_LOCATION=${{ env.REGION }},GOOGLE_GENAI_USE_VERTEXAI=true,MONGODB_DATABASE=asili,$MCP_ENV" \
-            $SECRET_FLAG
+            --set-env-vars "GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},GOOGLE_CLOUD_LOCATION=${{ env.REGION }},GOOGLE_GENAI_USE_VERTEXAI=true,MONGODB_DATABASE=asili,USE_MCP=true,MCP_READ_ONLY=true,DEMO_MODE=false" \
+            --set-secrets "MONGODB_URI=asili-mongodb-uri:latest" \
+            --memory 2Gi --cpu 2 --timeout 600 --cpu-boost --min-instances 1 --max-instances 5
 
       - name: Show deployment URL
         run: |

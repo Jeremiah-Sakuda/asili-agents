@@ -147,87 +147,55 @@ def create_baseline_runner(
     return InMemoryRunner(agent=agent)
 
 
-def run_agent(
-    runner: InMemoryRunner,
-    message: str,
-    user_id: str | None = None,
-    session_id: str | None = None,
-) -> RunResult:
-    """Execute the agent on a customer message.
-
-    Args:
-        runner: The configured InMemoryRunner.
-        message: The customer message to process.
-        user_id: Optional user identifier (defaults to generated).
-        session_id: Optional session identifier (defaults to generated).
-
-    Returns:
-        RunResult with steps, draft, facts, and raw events.
-    """
-    import asyncio
-
-    user_id = user_id or f"user_{uuid.uuid4().hex[:8]}"
-    session_id = session_id or f"session_{uuid.uuid4().hex[:8]}"
-
-    # Create session first (required by InMemoryRunner)
-    async def create_session() -> Any:
-        return await runner.session_service.create_session(
-            app_name=runner.app_name,
-            user_id=user_id,
-            session_id=session_id,
-        )
-
-    asyncio.run(create_session())
-
-    # Create the user message
-    user_message = types.Content(
-        role="user",
-        parts=[types.Part(text=message)],
+def _new_ids(user_id: str | None, session_id: str | None) -> tuple[str, str]:
+    return (
+        user_id or f"user_{uuid.uuid4().hex[:8]}",
+        session_id or f"session_{uuid.uuid4().hex[:8]}",
     )
 
-    steps: list[AgentStep] = []
-    raw_events: list[dict[str, Any]] = []
+
+def _ingest_event(
+    event: Event,
+    steps: list[AgentStep],
+    raw_events: list[dict[str, Any]],
+) -> str | None:
+    """Record an event's raw form + tool-call steps; return draft text if final."""
+    raw_events.append(_event_to_dict(event))
+
+    tool_calls = event.get_function_calls()
+    if tool_calls:
+        for fc in tool_calls:
+            steps.append(
+                AgentStep(
+                    id=f"step_{uuid.uuid4().hex[:8]}",
+                    agent_name=event.author or "unknown",
+                    agent_role="tool_call",
+                    step_type="tool",
+                    reasoning_trace=f"Calling {fc.name}",
+                    tool_calls=[{"name": fc.name, "args": dict(fc.args) if fc.args else {}}],
+                )
+            )
+
     draft: str | None = None
+    if event.is_final_response() and event.content:
+        for part in event.content.parts or []:
+            if part.text:
+                draft = part.text
+    return draft
+
+
+def _finalize_run(
+    steps: list[AgentStep],
+    draft: str | None,
+    raw_events: list[dict[str, Any]],
+) -> RunResult:
+    """Append decision-log steps + grounded facts/sources into a successful RunResult."""
     draft_sources: list[str] = []
-
-    try:
-        # Run the agent and collect events
-        for event in runner.run(
-            user_id=user_id,
-            session_id=session_id,
-            new_message=user_message,
-        ):
-            event_data = _event_to_dict(event)
-            raw_events.append(event_data)
-
-            # Track tool calls
-            tool_calls = event.get_function_calls()
-            if tool_calls:
-                for fc in tool_calls:
-                    step = AgentStep(
-                        id=f"step_{uuid.uuid4().hex[:8]}",
-                        agent_name=event.author or "unknown",
-                        agent_role="tool_call",
-                        step_type="tool",
-                        reasoning_trace=f"Calling {fc.name}",
-                        tool_calls=[{"name": fc.name, "args": dict(fc.args) if fc.args else {}}],
-                    )
-                    steps.append(step)
-
-            # Capture final response
-            if event.is_final_response() and event.content:
-                for part in event.content.parts or []:
-                    if part.text:
-                        draft = part.text
-                        # Extract sources from the decision log
-                        decisions = get_decision_log()
-                        for d in decisions:
-                            if d.grounded_facts:
-                                draft_sources.extend(d.grounded_facts)
-
-        # Convert decision log to steps
-        for decision in get_decision_log():
-            step = AgentStep(
+    for decision in get_decision_log():
+        if decision.grounded_facts:
+            draft_sources.extend(decision.grounded_facts)
+        steps.append(
+            AgentStep(
                 id=str(decision.id),
                 agent_name=decision.agent_name,
                 agent_role=decision.agent_role,
@@ -236,30 +204,109 @@ def run_agent(
                 grounded_facts=decision.grounded_facts,
                 timestamp=decision.timestamp,
             )
-            steps.append(step)
-
-        # Collect grounded facts
-        facts = _collect_grounded_facts()
-
-        return RunResult(
-            steps=steps,
-            draft=draft,
-            draft_sources=list(set(draft_sources)),
-            facts=facts,
-            raw_events=raw_events,
-            success=True,
         )
 
+    return RunResult(
+        steps=steps,
+        draft=draft,
+        draft_sources=list(set(draft_sources)),
+        facts=_collect_grounded_facts(),
+        raw_events=raw_events,
+        success=True,
+    )
+
+
+def _error_result(
+    steps: list[AgentStep], raw_events: list[dict[str, Any]], exc: Exception
+) -> RunResult:
+    return RunResult(
+        steps=steps,
+        draft=None,
+        draft_sources=[],
+        facts={},
+        raw_events=raw_events,
+        success=False,
+        error=str(exc),
+    )
+
+
+def run_agent(
+    runner: InMemoryRunner,
+    message: str,
+    user_id: str | None = None,
+    session_id: str | None = None,
+) -> RunResult:
+    """Execute the multi-agent team synchronously (local dev / tests).
+
+    For the deployed server, use :func:`run_agent_async`: the MongoDB MCP stdio
+    session must share the request's event loop, which this sync path (which
+    wraps ``asyncio.run()``) cannot provide.
+    """
+    import asyncio
+
+    user_id, session_id = _new_ids(user_id, session_id)
+
+    async def _create() -> Any:
+        return await runner.session_service.create_session(
+            app_name=runner.app_name, user_id=user_id, session_id=session_id
+        )
+
+    asyncio.run(_create())
+    user_message = types.Content(role="user", parts=[types.Part(text=message)])
+
+    steps: list[AgentStep] = []
+    raw_events: list[dict[str, Any]] = []
+    draft: str | None = None
+    try:
+        for event in runner.run(user_id=user_id, session_id=session_id, new_message=user_message):
+            d = _ingest_event(event, steps, raw_events)
+            if d is not None:
+                draft = d
+        return _finalize_run(steps, draft, raw_events)
     except Exception as e:
-        return RunResult(
-            steps=steps,
-            draft=None,
-            draft_sources=[],
-            facts={},
-            raw_events=raw_events,
-            success=False,
-            error=str(e),
-        )
+        return _error_result(steps, raw_events, e)
+
+
+async def run_agent_async(
+    runner: InMemoryRunner,
+    message: str,
+    user_id: str | None = None,
+    session_id: str | None = None,
+) -> RunResult:
+    """Execute the multi-agent team on the caller's event loop (MCP-safe).
+
+    Used by the FastAPI endpoints so the MongoDB MCP server's stdio session lives
+    in the same loop that drives the agent. The sync runner under a worker thread
+    deadlocks the MCP subprocess.
+    """
+    user_id, session_id = _new_ids(user_id, session_id)
+    await runner.session_service.create_session(
+        app_name=runner.app_name, user_id=user_id, session_id=session_id
+    )
+    user_message = types.Content(role="user", parts=[types.Part(text=message)])
+
+    steps: list[AgentStep] = []
+    raw_events: list[dict[str, Any]] = []
+    draft: str | None = None
+    try:
+        async for event in runner.run_async(
+            user_id=user_id, session_id=session_id, new_message=user_message
+        ):
+            d = _ingest_event(event, steps, raw_events)
+            if d is not None:
+                draft = d
+        return _finalize_run(steps, draft, raw_events)
+    except Exception as e:
+        return _error_result(steps, raw_events, e)
+
+
+def _extract_baseline_text(event: Event, raw_events: list[dict[str, Any]]) -> str | None:
+    raw_events.append(_event_to_dict(event))
+    if event.is_final_response() and event.content:
+        for part in event.content.parts or []:
+            if part.text:
+                return part.text
+    return None
 
 
 def run_baseline(
@@ -268,52 +315,49 @@ def run_baseline(
     user_id: str | None = None,
     session_id: str | None = None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
-    """Execute the baseline agent on a customer message.
-
-    Args:
-        runner: The configured baseline InMemoryRunner.
-        message: The customer message to process.
-        user_id: Optional user identifier.
-        session_id: Optional session identifier.
-
-    Returns:
-        Tuple of (response_text, raw_events).
-    """
+    """Execute the baseline agent synchronously (local dev / tests)."""
     import asyncio
 
-    user_id = user_id or f"user_{uuid.uuid4().hex[:8]}"
-    session_id = session_id or f"session_{uuid.uuid4().hex[:8]}"
+    user_id, session_id = _new_ids(user_id, session_id)
 
-    # Create session first (required by InMemoryRunner)
-    async def create_session() -> Any:
+    async def _create() -> Any:
         return await runner.session_service.create_session(
-            app_name=runner.app_name,
-            user_id=user_id,
-            session_id=session_id,
+            app_name=runner.app_name, user_id=user_id, session_id=session_id
         )
 
-    asyncio.run(create_session())
-
-    user_message = types.Content(
-        role="user",
-        parts=[types.Part(text=message)],
-    )
+    asyncio.run(_create())
+    user_message = types.Content(role="user", parts=[types.Part(text=message)])
 
     response_text: str | None = None
     raw_events: list[dict[str, Any]] = []
+    for event in runner.run(user_id=user_id, session_id=session_id, new_message=user_message):
+        text = _extract_baseline_text(event, raw_events)
+        if text is not None:
+            response_text = text
+    return response_text, raw_events
 
-    for event in runner.run(
-        user_id=user_id,
-        session_id=session_id,
-        new_message=user_message,
+
+async def run_baseline_async(
+    runner: InMemoryRunner,
+    message: str,
+    user_id: str | None = None,
+    session_id: str | None = None,
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """Execute the baseline agent on the caller's event loop (MCP-safe)."""
+    user_id, session_id = _new_ids(user_id, session_id)
+    await runner.session_service.create_session(
+        app_name=runner.app_name, user_id=user_id, session_id=session_id
+    )
+    user_message = types.Content(role="user", parts=[types.Part(text=message)])
+
+    response_text: str | None = None
+    raw_events: list[dict[str, Any]] = []
+    async for event in runner.run_async(
+        user_id=user_id, session_id=session_id, new_message=user_message
     ):
-        raw_events.append(_event_to_dict(event))
-
-        if event.is_final_response() and event.content:
-            for part in event.content.parts or []:
-                if part.text:
-                    response_text = part.text
-
+        text = _extract_baseline_text(event, raw_events)
+        if text is not None:
+            response_text = text
     return response_text, raw_events
 
 
