@@ -103,14 +103,23 @@ class TestComputeBundlePrice:
         assert result1["margin_percent"] == result2["margin_percent"]
 
     def test_bundle_price_high_margin_floor(self):
-        """Test that high margin floor is respected."""
+        """A high-but-achievable margin floor is respected (price rises to meet it)."""
         result = compute_bundle_price(
             items=[{"product_id": "Purple Tea", "quantity": 2}],
-            margin_floor=0.60,  # 60% - very high
+            margin_floor=0.55,  # achievable for Purple Tea (max ~58.9% at list)
         )
-        # Should still be margin safe, but price may be higher
-        assert result["margin_percent"] >= 0.60
+        assert result["margin_percent"] >= 0.55
         assert result["is_margin_safe"] is True
+
+    def test_unachievable_margin_floor_is_refused(self):
+        """A floor that can't be met under list price refuses, not surcharges."""
+        result = compute_bundle_price(
+            items=[{"product_id": "Purple Tea", "quantity": 2}],
+            margin_floor=0.60,  # > 58.9% max at list -> unachievable without a surcharge
+        )
+        assert "error" in result
+        assert result["is_margin_safe"] is False
+        assert "bundle_price" not in result
 
     def test_bundle_price_items_detail(self):
         """Test that items detail is included in result."""
