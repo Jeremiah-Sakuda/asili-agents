@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from asili_agents.config import get_settings
 from asili_agents.data.models import (
     Conversation,
+    ConversationStatus,
     MessageDirection,
     MessageStatus,
     Policy,
@@ -29,6 +30,12 @@ from asili_agents.data.models import (
 from asili_agents.data.repository import set_catalog_repository
 from asili_agents.data.seed import get_demo_seller
 from asili_agents.eval.runner import build_live_reply_fns_async, run_scorecard_async
+from asili_agents.integrations.telegram import (
+    SECRET_HEADER,
+    TelegramClient,
+    initials_of,
+    parse_update,
+)
 from asili_agents.runner import (
     create_baseline_runner,
     create_runner,
@@ -115,6 +122,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _state["repository"] = repository
     _state["use_mcp"] = use_mcp
     _state["data_source"] = data_source
+    _state["telegram"] = (
+        TelegramClient(settings.telegram_bot_token) if settings.telegram_bot_token else None
+    )
+    _state["telegram_secret"] = settings.telegram_webhook_secret
+    if _state["telegram"]:
+        logger.info("Telegram channel enabled.")
     _state["conversations"] = {}
     _state["pending_drafts"] = {}  # conversation_id -> draft info
     _state["runners"] = {}  # conversation_id -> runner
@@ -617,6 +630,14 @@ async def approve_draft(request: ApprovalRequest) -> ApprovalResponse:
     # Approve or edit
     final_body = request.edited_body if request.action == "edit" else pending["body"]
 
+    # Deliver over the originating channel (Telegram), if the draft came from one.
+    telegram = _state.get("telegram")
+    if pending.get("channel") == "telegram" and telegram is not None and pending.get("chat_id"):
+        try:
+            await telegram.send_message(pending["chat_id"], final_body)
+        except Exception:
+            logger.exception("Telegram delivery failed for chat %s", pending.get("chat_id"))
+
     # Add the message to the conversation
     message = conversation.add_message(
         direction=MessageDirection.OUTBOUND,
@@ -656,6 +677,81 @@ async def get_pending_draft(conversation_id: str) -> dict[str, Any]:
         "has_pending": True,
         "draft": pending,
     }
+
+
+@app.post("/api/telegram/webhook")
+async def telegram_webhook(request: Request) -> dict[str, Any]:
+    """Inbound Telegram messages -> a grounded draft held for seller approval.
+
+    The reply is NOT sent to the customer here. It becomes a pending draft that
+    the seller approves (POST /api/approve), at which point it is delivered back
+    to the customer's Telegram chat. This preserves the human-approval gate.
+    """
+    secret = _state.get("telegram_secret")
+    if secret and request.headers.get(SECRET_HEADER) != secret:
+        raise HTTPException(status_code=401, detail="invalid Telegram secret token")
+
+    payload = await request.json()
+    inbound = parse_update(payload)
+    if inbound is None or not inbound.text.strip():
+        return {"ok": True, "skipped": True}
+
+    seller = _state.get("seller")
+    products = _state.get("products", [])
+    policy = _state.get("policy")
+    if not seller or not policy:
+        raise HTTPException(status_code=500, detail="Service not initialized")
+
+    conversation_id = f"tg:{inbound.chat_id}"
+    conversation = _state["conversations"].get(conversation_id)
+    if conversation is None:
+        conversation = Conversation(
+            seller_id=seller.id,
+            customer_name=inbound.sender_name,
+            customer_initials=initials_of(inbound.sender_name),
+            channel="Telegram",
+            status=ConversationStatus.AWAITING_REPLY,
+        )
+        _state["conversations"][conversation_id] = conversation
+    conversation.add_message(
+        direction=MessageDirection.INBOUND,
+        sender_name=inbound.sender_name,
+        body=inbound.text,
+    )
+
+    telegram = _state.get("telegram")
+    if telegram is not None:
+        try:
+            await telegram.send_chat_action(inbound.chat_id, "typing")
+        except Exception:
+            logger.debug("Telegram typing action failed", exc_info=True)
+
+    # Ground a draft reply behind the approval gate. The per-run decision log is
+    # a ContextVar, so no global lock is needed; run on this loop (MCP-safe).
+    try:
+        runner = create_runner(
+            seller,
+            products,
+            policy,
+            repository=_state.get("repository"),
+            use_mcp=_state.get("use_mcp"),
+        )
+        result = await run_agent_async(runner, inbound.text)
+    except Exception:
+        logger.exception("Agent run failed for Telegram chat %s", inbound.chat_id)
+        return {"ok": True, "pending": False, "error": "agent_run_failed"}
+
+    pending = bool(result.success and result.draft)
+    if pending:
+        _state["pending_drafts"][conversation_id] = {
+            "draft_id": f"draft_{conversation_id}",
+            "body": result.draft,
+            "sources": result.draft_sources,
+            "status": "pending",
+            "channel": "telegram",
+            "chat_id": inbound.chat_id,
+        }
+    return {"ok": True, "conversation_id": conversation_id, "pending": pending}
 
 
 @app.post("/api/eval")
