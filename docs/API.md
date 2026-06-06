@@ -442,7 +442,7 @@ curl -s -X POST http://localhost:8080/api/reset
 
 Run the multi-agent system (Operations Manager → Messaging + Pricing sub-agents, with tools) on a customer message. Returns the agent trace steps, grounded fact cards, and the composed draft reply. The draft is stored as **pending** (keyed by `conversation_id`) for later approval via `POST /api/approve`.
 
-Execution is serialized behind `_run_lock` and offloaded to a worker thread (the runner uses `asyncio.run` internally).
+Execution is serialized behind `_run_lock` and runs on the request's event loop via the async runner (`run_agent_async`), so the MongoDB MCP server's stdio session shares that loop.
 
 **Errors:**
 - `500` if demo data (seller/policy) is not initialized.
@@ -668,7 +668,7 @@ Run the **Trust Scorecard**: the multi-agent team vs the naive baseline across a
 
 > The scorecard is a **deterministic heuristic** that is robust to common paraphrases (spelled-out numbers, "half off", "$8 off", thousands separators, clause-scoped refusals). It is **not** a general-purpose lie detector. The hard structural guarantees in the system are the deterministic Decimal margin engine and read-only MCP grounding — the scorecard measures behavior, it does not enforce it.
 
-Serialized behind `_run_lock` and offloaded to a worker thread. Issues real Gemini calls for every scenario × 2 systems, so `limit` bounds cost/latency.
+Serialized behind `_run_lock` and run on the request's event loop via the async scorecard (`run_scorecard_async`). Issues real Gemini calls for every scenario × 2 systems, so `limit` bounds cost/latency.
 
 **Errors:** `500` if demo data (seller/policy) is not initialized.
 

@@ -110,7 +110,7 @@ One container (`Dockerfile`, `uvicorn asili_agents.api.main:app`, port 8080) hos
 | `POST /api/eval` | run the **Trust Scorecard** (team vs. baseline) |
 | `POST /api/reset` | reset demo state |
 
-`/api/run` runs the synchronous ADK runner in a worker thread (`asyncio.to_thread`) so the agent's internal `asyncio.run()` doesn't collide with FastAPI's event loop.
+`/api/run` drives the agent with the **async** ADK runner (`run_agent_async`) directly on FastAPI's event loop, so the MongoDB MCP server's stdio session shares that loop. (The earlier sync-runner-in-a-worker-thread approach deadlocked the MCP subprocess inside Cloud Run.)
 
 ### Operations Manager — the root Agent
 A Gemini-backed ADK `Agent` (`agents/operations_manager.py`) that coordinates but is **not** the expert. Its instruction is explicit: it does **not** invent product details or prices — it routes product questions to Messaging, routes bundle/pricing questions to Messaging (for catalog data) then Pricing, composes the specialists' findings into one on-brand reply, logs each decision via `log_decision`, and **always** finishes by calling `send_for_approval`. It carries only two tools (`log_decision`, `send_for_approval`) and two sub-agents (Messaging, Pricing).
@@ -192,3 +192,5 @@ The diagram above is the architecture the system runs. Here is precisely what is
 - **Atlas write/persistence — staged.** Reads from Atlas are wired; persisting drafts / decisions / `eval_runs` *back* to Atlas (the audited write path in the diagram) is the remaining increment — decision logging currently lives in-process.
 
 In short: the MongoDB-MCP/Atlas grounding **read** path, the deterministic pricing engine, the capability-based approval gate, the Trust Scorecard endpoint, and the no-tools baseline are running as drawn; the only piece still staged is persisting trust artifacts **back** to Atlas (the write path).
+
+This is **verified live on Cloud Run**: `GET /` reports `data_source: atlas` and `mcp_grounding: true`, and the Messaging agent answers from Atlas through the MCP `find` tool. (Getting the MCP server's stdio session to run in-container required the async runner above; the service runs with 2 CPU / 2 GiB, a startup CPU boost, and one warm instance because the MCP server spawns a Node subprocess.)
