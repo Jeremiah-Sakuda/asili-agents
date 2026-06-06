@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from asili_agents.api import main as main_module
 from asili_agents.api.main import app
-from asili_agents.data.models import Conversation, ConversationStatus
+from asili_agents.data.models import Conversation, ConversationStatus, MessageDirection
 from asili_agents.integrations.telegram import initials_of, parse_update
 from asili_agents.runner import RunResult
 
@@ -152,3 +152,41 @@ class TestApproveDelivers:
         r = client.post("/api/approve", json={"conversation_id": cid, "action": "approve"})
         assert r.status_code == 200, r.text
         assert fake_tg.sent == [("777", "Yes, 6 tins.")]
+
+
+class TestInbox:
+    def test_lists_conversations_pending_first(self, client, monkeypatch):
+        demo = Conversation(
+            seller_id=uuid.uuid4(),
+            customer_name="Zed",
+            customer_initials="Z",
+            channel="Storefront chat",
+            status=ConversationStatus.ACTIVE,
+        )
+        demo.add_message(direction=MessageDirection.INBOUND, sender_name="Zed", body="hello there")
+        tg = Conversation(
+            seller_id=uuid.uuid4(),
+            customer_name="Amina",
+            customer_initials="A",
+            channel="Telegram",
+            status=ConversationStatus.AWAITING_REPLY,
+        )
+        tg.add_message(direction=MessageDirection.INBOUND, sender_name="Amina", body="purple tea?")
+        monkeypatch.setitem(main_module._state["conversations"], "demo1", demo)
+        monkeypatch.setitem(main_module._state["conversations"], "tg:9", tg)
+        monkeypatch.setitem(
+            main_module._state["pending_drafts"],
+            "tg:9",
+            {"body": "Yes, 6 tins.", "sources": ["stock"], "channel": "telegram", "chat_id": "9"},
+        )
+
+        items = client.get("/api/inbox").json()
+        ids = [i["conversation_id"] for i in items]
+        assert "tg:9" in ids and "demo1" in ids
+        # The pending Telegram conversation sorts first (seller's action queue).
+        assert items[0]["conversation_id"] == "tg:9"
+        assert items[0]["has_pending"] is True
+        assert items[0]["channel"] == "Telegram"
+        demo_item = next(i for i in items if i["conversation_id"] == "demo1")
+        assert demo_item["has_pending"] is False
+        assert demo_item["last_message"] == "hello there"

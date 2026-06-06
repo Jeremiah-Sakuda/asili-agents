@@ -74,9 +74,22 @@ Receives Telegram `Update` objects.
 - Grounds a draft reply and stores it as **pending** (channel `telegram`, `chat_id`).
 - Returns `{"ok": true, "conversation_id": "tg:<chat_id>", "pending": <bool>}`.
 
+### `GET /api/inbox`
+Lists conversations for the seller inbox — incoming Telegram chats (`tg:<chat_id>`)
+and the demo conversation — each with `customer_name`, `channel`, `last_message`,
+and `has_pending`. Conversations with a pending draft sort first. The web UI
+(`/app/`) polls this so new customer messages surface live with a "pending" dot.
+
 ### `POST /api/approve` (existing)
 When the approved draft's channel is `telegram`, the final text is delivered to
 the customer's chat via `sendMessage` before the conversation is updated.
+
+## Seller inbox (web UI)
+
+The `/app/` console lists incoming Telegram conversations alongside the demo one.
+The seller opens a conversation, sees the customer's message and the grounded
+draft (with its source chips), and taps **Approve / Edit / Reject** — approval
+delivers the reply to the customer's Telegram chat. No manual API call needed.
 
 ## `TelegramClient`
 

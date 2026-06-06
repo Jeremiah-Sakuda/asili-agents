@@ -454,6 +454,33 @@ async def get_decisions() -> list[AgentStepResponse]:
     ]
 
 
+@app.get("/api/inbox")
+async def get_inbox() -> list[dict[str, Any]]:
+    """List conversations for the seller inbox (incoming Telegram + demo).
+
+    Each item summarizes a conversation so the UI can show the inbox and poll for
+    new messages. Conversations with a pending draft are surfaced first.
+    """
+    items: list[dict[str, Any]] = []
+    for conversation_id, conversation in _state.get("conversations", {}).items():
+        last = conversation.messages[-1] if conversation.messages else None
+        items.append(
+            {
+                "conversation_id": conversation_id,
+                "customer_name": conversation.customer_name,
+                "customer_initials": conversation.customer_initials,
+                "channel": conversation.channel,
+                "status": conversation.status.value,
+                "last_message": last.body if last else "",
+                "last_direction": last.direction.value if last else None,
+                "has_pending": conversation_id in _state.get("pending_drafts", {}),
+            }
+        )
+    # Pending drafts first (seller's action queue), then everything else.
+    items.sort(key=lambda item: (not item["has_pending"], item["customer_name"]))
+    return items
+
+
 @app.post("/api/reset")
 async def reset_demo() -> dict[str, str]:
     """Reset the demo state."""

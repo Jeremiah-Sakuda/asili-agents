@@ -590,3 +590,22 @@ ol, ul { list-style: none; }
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
   .rail__step { opacity: 1; transform: none; }
 }
+
+/* ---- Inbox list ------------------------------------------------------- */
+.inbox__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.inbox__empty { color: #8a8597; font-size: 13px; padding: 8px 2px; }
+.inbox__item {
+  display: flex; align-items: center; gap: 10px; padding: 9px 10px;
+  border-radius: 12px; cursor: pointer; border: 1px solid transparent;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.inbox__item:hover { background: rgba(127, 90, 240, 0.06); }
+.inbox__item.is-active { background: rgba(127, 90, 240, 0.10); border-color: rgba(127, 90, 240, 0.35); }
+.inbox__meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.inbox__top { display: flex; align-items: center; gap: 8px; }
+.inbox__top strong { font-size: 14px; }
+.inbox__snippet { color: #8a8597; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.inbox__dot { width: 9px; height: 9px; border-radius: 50%; background: #f0a500; box-shadow: 0 0 0 3px rgba(240, 165, 0, 0.18); flex: none; }
+.avatar--sm { width: 30px; height: 30px; font-size: 11px; flex: none; }
+.chip--tg { background: rgba(38, 160, 230, 0.16); color: #1c8fd0; }
+.chip--chan { background: rgba(127, 90, 240, 0.12); color: #6b46c1; }

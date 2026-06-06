@@ -45,8 +45,17 @@
     <!-- Scrollable conversation + panels -->
     <section class="scroll" id="scroll">
 
-      <!-- 2) CONVERSATION: inbound customer bubble + primary CTA -->
-      <article class="card thread" id="threadCard" aria-label="Customer conversation">
+      <!-- 1b) INBOX: incoming conversations (Telegram + demo); polled for new ones -->
+      <article class="card inbox" id="inboxCard" aria-label="Inbox">
+        <div class="panel__head">
+          <h2 class="panel__title">Inbox</h2>
+          <span class="panel__tag" id="inboxTag">live</span>
+        </div>
+        <ul class="inbox__list" id="inboxList"></ul>
+      </article>
+
+      <!-- 2) CONVERSATION: opened from the inbox -->
+      <article class="card thread" id="threadCard" aria-label="Customer conversation" hidden>
         <div class="thread__meta" id="threadMeta">
           <span class="avatar" id="custAvatar">··</span>
           <div class="thread__who">

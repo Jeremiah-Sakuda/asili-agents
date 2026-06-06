@@ -74,13 +74,17 @@ State (`seller`, `products`, `policy`, `conversations`, `pending_drafts`, `runne
 | `POST` | `/api/conversations` | Create a demo conversation | No |
 | `GET` | `/api/conversations/{conversation_id}` | Fetch a conversation (auto-creates if missing) | No |
 | `GET` | `/api/decisions` | All logged agent decision steps | No |
+| `GET` | `/api/inbox` | List conversations (Telegram + demo) for the seller inbox; pending first | No |
 | `POST` | `/api/reset` | Reset demo state | No |
 | `POST` | `/api/run` | Run the multi-agent team on a message | **Yes** |
 | `POST` | `/api/run/baseline` | Run the tool-less baseline agent | **Yes** |
 | `POST` | `/api/approve` | Approve / edit / reject a pending draft | No |
 | `GET` | `/api/pending/{conversation_id}` | Fetch the pending draft, if any | No |
 | `POST` | `/api/eval` | Run the Trust Scorecard (team vs baseline) | **Yes** |
+| `POST` | `/api/telegram/webhook` | Inbound Telegram message → grounded draft held for seller approval | **Yes** |
 | — | `/app/` | Static web UI (mount, `html=True`) | No |
+
+> **Telegram channel:** `POST /api/telegram/webhook` verifies the `X-Telegram-Bot-Api-Secret-Token` header, parses the Telegram `Update`, and grounds a draft reply that is held as **pending** (it is *not* sent to the customer). The seller approves it from the inbox; `POST /api/approve` then delivers the approved text back to the customer's Telegram chat. See [TELEGRAM.md](TELEGRAM.md).
 
 ---
 
