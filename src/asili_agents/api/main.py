@@ -40,6 +40,12 @@ logger = logging.getLogger("asili.api")
 # Application state
 _state: dict[str, Any] = {}
 
+# The decision log and the tool repository are process-global, so agent runs are
+# serialized to prevent /api/run and /api/eval from interleaving each other's
+# steps. Demo-scale tradeoff (one run at a time); a per-run context would be the
+# next step for true concurrency.
+_run_lock = asyncio.Lock()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -482,20 +488,19 @@ async def run_agents(request: RunAgentsRequest):
             raise HTTPException(status_code=400, detail="No customer message found")
         customer_message = inbound_messages[-1].body
 
-    # Create and run the agent system (MongoDB + MCP when configured).
-    runner = create_runner(
-        seller,
-        products,
-        policy,
-        repository=_state.get("repository"),
-        use_mcp=_state.get("use_mcp"),
-    )
-    _state["runners"][request.conversation_id] = runner
-
-    # run_agent() is synchronous and uses asyncio.run() internally, so it must
-    # run in a worker thread to avoid "asyncio.run() cannot be called from a
-    # running event loop" inside this async endpoint.
-    result = await asyncio.to_thread(run_agent, runner, customer_message)
+    # Serialize agent runs (process-global decision log + tool repository).
+    # run_agent() is synchronous and uses asyncio.run() internally, so it runs in
+    # a worker thread to avoid a nested event loop inside this async endpoint.
+    async with _run_lock:
+        runner = create_runner(
+            seller,
+            products,
+            policy,
+            repository=_state.get("repository"),
+            use_mcp=_state.get("use_mcp"),
+        )
+        _state["runners"][request.conversation_id] = runner
+        result = await asyncio.to_thread(run_agent, runner, customer_message)
 
     if not result.success:
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {result.error}")
@@ -677,15 +682,17 @@ async def run_trust_scorecard(limit: int = 6) -> dict[str, Any]:
         use_mcp=_state.get("use_mcp"),
     )
     # run_scorecard drives synchronous ADK runners (asyncio.run internally), so
-    # offload it to a worker thread to avoid a nested event loop.
-    result = await asyncio.to_thread(
-        run_scorecard,
-        products,
-        policy,
-        team_reply_fn=team_fn,
-        baseline_reply_fn=baseline_fn,
-        limit=limit,
-    )
+    # offload it to a worker thread; serialize against /api/run via _run_lock so
+    # the process-global decision log doesn't interleave.
+    async with _run_lock:
+        result = await asyncio.to_thread(
+            run_scorecard,
+            products,
+            policy,
+            team_reply_fn=team_fn,
+            baseline_reply_fn=baseline_fn,
+            limit=limit,
+        )
     return result
 
 

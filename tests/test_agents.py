@@ -91,6 +91,33 @@ class TestRunnerCreation:
         assert runner.agent.name == "baseline_agent"
 
 
+class TestApprovalGateIsStructural:
+    """The approval gate is capability-based, not just prompt text: no agent has
+    a tool that can send to a customer. The only outbound path is the
+    human-approved /api/approve endpoint, so an LLM that ignores its instructions
+    still cannot emit an unapproved send.
+    """
+
+    @staticmethod
+    def _tool_names(agent):
+        return [
+            t.__name__ if hasattr(t, "__name__") else getattr(t, "name", str(t))
+            for t in agent.tools
+        ]
+
+    def test_no_agent_can_send_directly(self):
+        om = create_operations_manager(use_mcp=False)
+        for agent in [om, *om.sub_agents]:
+            names = self._tool_names(agent)
+            assert "channel_send" not in names, f"{agent.name} can send directly"
+
+    def test_root_only_outbound_is_the_approval_gate(self):
+        om = create_operations_manager(use_mcp=False)
+        names = self._tool_names(om)
+        assert "send_for_approval" in names
+        assert "channel_send" not in names
+
+
 # Integration tests - require GOOGLE_API_KEY
 @pytest.mark.skipif(
     not os.environ.get("GOOGLE_API_KEY"),
