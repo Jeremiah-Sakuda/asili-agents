@@ -271,6 +271,7 @@ The build deliberately focuses on the seller-facing operations agents and the de
 - [docs/API.md](docs/API.md) — complete REST API reference
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — setup, project structure, configuration (env vars), and tooling
 - [docs/TRUST_SCORECARD.md](docs/TRUST_SCORECARD.md) — how the deterministic scorer works and its honest limits
+- [docs/TELEGRAM.md](docs/TELEGRAM.md) — the Telegram customer-DM channel (webhook → approval gate → delivery)
 - [BY_HAND.md](BY_HAND.md) — manual steps to finish deployment / submission
 
 ---

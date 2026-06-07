@@ -46,6 +46,16 @@ class SendResult(BaseModel):
 # Callback for approval workflow (set by the runtime)
 _approval_callback: Callable[[str, str], ApprovalResult] | None = None
 _send_callback: Callable[[str, str], SendResult] | None = None
+# Opt-in auto-approve for non-interactive demos (e.g. the CLI). OFF by default so
+# the gate FAILS CLOSED: with no approval callback wired, drafts stay PENDING and
+# nothing is ever sent unsupervised.
+_auto_approve_enabled: bool = False
+
+
+def set_auto_approve(enabled: bool) -> None:
+    """Enable auto-approval for non-interactive demos. Off by default (fail closed)."""
+    global _auto_approve_enabled
+    _auto_approve_enabled = enabled
 
 
 def set_approval_callback(callback: Callable[[str, str], ApprovalResult]) -> None:
@@ -114,13 +124,22 @@ def send_for_approval(
         result = _approval_callback(draft_id, draft_body)
         return result.model_dump()
 
-    # Default: auto-approve in demo mode
+    if _auto_approve_enabled:
+        # Explicit opt-in only (e.g. the CLI demo).
+        return ApprovalResult(
+            status=ApprovalStatus.APPROVED,
+            draft_id=draft_id,
+            body=draft_body,
+            approved_at=datetime.now(UTC),
+            approved_by="auto_approve_demo",
+        ).model_dump()
+
+    # Fail closed: no callback and no explicit auto-approve -> hold as PENDING.
+    # Nothing is sent to a customer without a real approval decision.
     return ApprovalResult(
-        status=ApprovalStatus.APPROVED,
+        status=ApprovalStatus.PENDING,
         draft_id=draft_id,
         body=draft_body,
-        approved_at=datetime.now(UTC),
-        approved_by="demo_auto_approve",
     ).model_dump()
 
 

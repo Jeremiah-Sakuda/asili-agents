@@ -8,12 +8,13 @@ This API provides:
 """
 
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -21,6 +22,7 @@ from pydantic import BaseModel, Field
 from asili_agents.config import get_settings
 from asili_agents.data.models import (
     Conversation,
+    ConversationStatus,
     MessageDirection,
     MessageStatus,
     Policy,
@@ -28,7 +30,14 @@ from asili_agents.data.models import (
 )
 from asili_agents.data.repository import set_catalog_repository
 from asili_agents.data.seed import get_demo_seller
+from asili_agents.data.store import ConversationStore, InMemoryStore, MongoStore
 from asili_agents.eval.runner import build_live_reply_fns_async, run_scorecard_async
+from asili_agents.integrations.telegram import (
+    SECRET_HEADER,
+    TelegramClient,
+    initials_of,
+    parse_update,
+)
 from asili_agents.runner import (
     create_baseline_runner,
     create_runner,
@@ -46,6 +55,34 @@ logger = logging.getLogger("asili.api")
 
 # Application state
 _state: dict[str, Any] = {}
+
+# Inbound payload + abuse guards. The service is deployed --allow-unauthenticated
+# and some endpoints issue billable Gemini calls, so cap body size and rate-limit
+# the expensive/agent endpoints (best-effort, per-process sliding window).
+MAX_WEBHOOK_BYTES = 64 * 1024
+MAX_INBOUND_CHARS = 2000
+_rate_state: dict[str, list[float]] = {}
+
+
+def _rate_limited(key: str, max_calls: int, window_s: float) -> bool:
+    """Return True if `key` has exceeded `max_calls` within `window_s` seconds."""
+    now = time.monotonic()
+    recent = [t for t in _rate_state.get(key, []) if now - t < window_s]
+    if len(recent) >= max_calls:
+        _rate_state[key] = recent
+        return True
+    recent.append(now)
+    _rate_state[key] = recent
+    return False
+
+
+def _client_key(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _store() -> ConversationStore:
+    store: ConversationStore = _state["store"]
+    return store
 
 
 @asynccontextmanager
@@ -115,22 +152,40 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _state["repository"] = repository
     _state["use_mcp"] = use_mcp
     _state["data_source"] = data_source
+    _state["telegram"] = (
+        TelegramClient(settings.telegram_bot_token) if settings.telegram_bot_token else None
+    )
+    _state["telegram_secret"] = settings.telegram_webhook_secret
+    _state["channel_enabled"] = bool(settings.telegram_bot_token)
+    if _state["channel_enabled"]:
+        logger.info("Telegram channel enabled.")
+        if not settings.telegram_webhook_secret:
+            logger.error(
+                "TELEGRAM_BOT_TOKEN is set but TELEGRAM_WEBHOOK_SECRET is not — the "
+                "webhook will reject all requests (fail closed). Set a webhook secret."
+            )
     _state["conversations"] = {}
     _state["pending_drafts"] = {}  # conversation_id -> draft info
     _state["runners"] = {}  # conversation_id -> runner
+    _rate_state.clear()
 
-    # Set up approval callback to store pending drafts
+    # Durable store: MongoDB when Atlas is connected (survives restarts + shared
+    # across instances), else in-memory wrapping the dicts above (local/tests).
+    store: ConversationStore = InMemoryStore(_state["conversations"], _state["pending_drafts"])
+    if data_source == "atlas" and settings.mongodb_uri:
+        try:
+            store = MongoStore(settings.mongodb_uri, settings.mongodb_database)
+            logger.info("Durable conversation store: MongoDB.")
+        except Exception:
+            logger.exception("MongoStore init failed — using in-memory store.")
+            store = InMemoryStore(_state["conversations"], _state["pending_drafts"])
+    _state["store"] = store
+
+    # The agent's send_for_approval just marks the draft PENDING; the real
+    # pending draft (keyed by conversation) is persisted by the endpoints via the
+    # store. This callback only guarantees the agent never auto-sends.
     def approval_callback(draft_id: str, body: str) -> ApprovalResult:
-        # Store the draft as pending - actual approval happens via /api/approve
-        _state["pending_drafts"][draft_id] = {
-            "body": body,
-            "status": "pending",
-        }
-        return ApprovalResult(
-            status=ApprovalStatus.PENDING,
-            draft_id=draft_id,
-            body=body,
-        )
+        return ApprovalResult(status=ApprovalStatus.PENDING, draft_id=draft_id, body=body)
 
     set_approval_callback(approval_callback)
 
@@ -404,7 +459,7 @@ async def create_conversation(customer_name: str = "Dana R.") -> ConversationRes
     from asili_agents.data.seed import create_demo_conversation
 
     conversation = create_demo_conversation()
-    _state["conversations"][str(conversation.id)] = conversation
+    _store().save_conversation(str(conversation.id), conversation)
 
     return _conversation_to_response(conversation)
 
@@ -412,13 +467,13 @@ async def create_conversation(customer_name: str = "Dana R.") -> ConversationRes
 @app.get("/api/conversations/{conversation_id}", response_model=ConversationResponse)
 async def get_conversation(conversation_id: str) -> ConversationResponse:
     """Get a conversation by ID."""
-    conversation = _state["conversations"].get(conversation_id)
+    conversation = _store().get_conversation(conversation_id)
     if not conversation:
         # Create default demo conversation
         from asili_agents.data.seed import create_demo_conversation
 
         conversation = create_demo_conversation()
-        _state["conversations"][str(conversation.id)] = conversation
+        _store().save_conversation(str(conversation.id), conversation)
 
     return _conversation_to_response(conversation)
 
@@ -441,12 +496,39 @@ async def get_decisions() -> list[AgentStepResponse]:
     ]
 
 
+@app.get("/api/inbox")
+async def get_inbox() -> list[dict[str, Any]]:
+    """List conversations for the seller inbox (incoming Telegram + demo).
+
+    Each item summarizes a conversation so the UI can show the inbox and poll for
+    new messages. Conversations with a pending draft are surfaced first.
+    """
+    items: list[dict[str, Any]] = []
+    store = _store()
+    for conversation_id, conversation in store.list_conversations():
+        last = conversation.messages[-1] if conversation.messages else None
+        items.append(
+            {
+                "conversation_id": conversation_id,
+                "customer_name": conversation.customer_name,
+                "customer_initials": conversation.customer_initials,
+                "channel": conversation.channel,
+                "status": conversation.status.value,
+                "last_message": last.body if last else "",
+                "last_direction": last.direction.value if last else None,
+                "has_pending": store.has_pending(conversation_id),
+            }
+        )
+    # Pending drafts first (seller's action queue), then everything else.
+    items.sort(key=lambda item: (not item["has_pending"], item["customer_name"]))
+    return items
+
+
 @app.post("/api/reset")
 async def reset_demo() -> dict[str, str]:
     """Reset the demo state."""
     clear_decision_log()
-    _state["conversations"] = {}
-    _state["pending_drafts"] = {}
+    _store().clear()
     _state["runners"] = {}
 
     # Reinitialize with fresh demo data
@@ -461,12 +543,15 @@ async def reset_demo() -> dict[str, str]:
 
 
 @app.post("/api/run", response_model=RunAgentsResponse)
-async def run_agents(request: RunAgentsRequest) -> RunAgentsResponse:
+async def run_agents(request: RunAgentsRequest, http_request: Request) -> RunAgentsResponse:
     """Run the multi-agent system on a conversation.
 
     This endpoint executes the real ADK agents on the customer message,
     returning the agent steps, grounded facts, and composed draft reply.
     """
+    if _rate_limited(f"run:{_client_key(http_request)}", max_calls=30, window_s=60.0):
+        raise HTTPException(status_code=429, detail="rate limited")
+
     seller = _state.get("seller")
     products = _state.get("products", [])
     policy = _state.get("policy")
@@ -475,18 +560,21 @@ async def run_agents(request: RunAgentsRequest) -> RunAgentsResponse:
         raise HTTPException(status_code=500, detail="Demo data not initialized")
 
     # Get or create conversation
-    conversation = _state["conversations"].get(request.conversation_id)
+    store = _store()
+    conversation = store.get_conversation(request.conversation_id)
     if not conversation:
         from asili_agents.data.seed import create_demo_conversation
 
         conversation = create_demo_conversation()
-        _state["conversations"][str(conversation.id)] = conversation
+        store.save_conversation(str(conversation.id), conversation)
 
     # Get the customer message (use provided or last inbound message)
     if request.message:
         customer_message = request.message
     else:
-        inbound_messages = [m for m in conversation.messages if m.direction.value == "inbound"]
+        inbound_messages = [
+            m for m in conversation.messages if m.direction == MessageDirection.INBOUND
+        ]
         if not inbound_messages:
             raise HTTPException(status_code=400, detail="No customer message found")
         customer_message = inbound_messages[-1].body
@@ -509,13 +597,15 @@ async def run_agents(request: RunAgentsRequest) -> RunAgentsResponse:
 
     # Store the draft for approval
     if result.draft:
-        draft_id = f"draft_{request.conversation_id}"
-        _state["pending_drafts"][request.conversation_id] = {
-            "draft_id": draft_id,
-            "body": result.draft,
-            "sources": result.draft_sources,
-            "status": "pending",
-        }
+        store.set_pending(
+            request.conversation_id,
+            {
+                "draft_id": f"draft_{request.conversation_id}",
+                "body": result.draft,
+                "sources": result.draft_sources,
+                "status": "pending",
+            },
+        )
 
     # Build response
     steps = [
@@ -564,18 +654,21 @@ async def run_baseline_agent(request: RunAgentsRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Demo data not initialized")
 
     # Get or create conversation
-    conversation = _state["conversations"].get(request.conversation_id)
+    store = _store()
+    conversation = store.get_conversation(request.conversation_id)
     if not conversation:
         from asili_agents.data.seed import create_demo_conversation
 
         conversation = create_demo_conversation()
-        _state["conversations"][str(conversation.id)] = conversation
+        store.save_conversation(str(conversation.id), conversation)
 
     # Get the customer message
     if request.message:
         customer_message = request.message
     else:
-        inbound_messages = [m for m in conversation.messages if m.direction.value == "inbound"]
+        inbound_messages = [
+            m for m in conversation.messages if m.direction == MessageDirection.INBOUND
+        ]
         if not inbound_messages:
             raise HTTPException(status_code=400, detail="No customer message found")
         customer_message = inbound_messages[-1].body
@@ -601,21 +694,33 @@ async def approve_draft(request: ApprovalRequest) -> ApprovalResponse:
     - edit: Send the edited version
     - reject: Discard the draft
     """
-    pending = _state["pending_drafts"].get(request.conversation_id)
+    store = _store()
+    pending = store.get_pending(request.conversation_id)
     if not pending:
         raise HTTPException(status_code=404, detail="No pending draft for this conversation")
 
-    conversation = _state["conversations"].get(request.conversation_id)
+    conversation = store.get_conversation(request.conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     if request.action == "reject":
-        # Discard the draft
-        del _state["pending_drafts"][request.conversation_id]
+        store.delete_pending(request.conversation_id)
         return ApprovalResponse(status="rejected", message=None)
 
     # Approve or edit
-    final_body = request.edited_body if request.action == "edit" else pending["body"]
+    final_body = str(
+        request.edited_body
+        if request.action == "edit" and request.edited_body
+        else pending.get("body", "")
+    )
+
+    # Deliver over the originating channel (Telegram), if the draft came from one.
+    telegram = _state.get("telegram")
+    if pending.get("channel") == "telegram" and telegram is not None and pending.get("chat_id"):
+        try:
+            await telegram.send_message(pending["chat_id"], final_body)
+        except Exception:
+            logger.exception("Telegram delivery failed for chat %s", pending.get("chat_id"))
 
     # Add the message to the conversation
     message = conversation.add_message(
@@ -627,8 +732,9 @@ async def approve_draft(request: ApprovalRequest) -> ApprovalResponse:
     )
     message.status = MessageStatus.SENT
 
-    # Clear the pending draft
-    del _state["pending_drafts"][request.conversation_id]
+    # Persist the updated conversation + clear the pending draft.
+    store.save_conversation(request.conversation_id, conversation)
+    store.delete_pending(request.conversation_id)
 
     return ApprovalResponse(
         status="approved" if request.action == "approve" else "edited",
@@ -648,7 +754,7 @@ async def approve_draft(request: ApprovalRequest) -> ApprovalResponse:
 @app.get("/api/pending/{conversation_id}")
 async def get_pending_draft(conversation_id: str) -> dict[str, Any]:
     """Get the pending draft for a conversation, if any."""
-    pending = _state["pending_drafts"].get(conversation_id)
+    pending = _store().get_pending(conversation_id)
     if not pending:
         return {"has_pending": False}
 
@@ -658,8 +764,101 @@ async def get_pending_draft(conversation_id: str) -> dict[str, Any]:
     }
 
 
+@app.post("/api/telegram/webhook")
+async def telegram_webhook(request: Request) -> dict[str, Any]:
+    """Inbound Telegram messages -> a grounded draft held for seller approval.
+
+    The reply is NOT sent to the customer here. It becomes a pending draft that
+    the seller approves (POST /api/approve), at which point it is delivered back
+    to the customer's Telegram chat. This preserves the human-approval gate.
+    """
+    # Reject oversized bodies before reading them.
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > MAX_WEBHOOK_BYTES:
+        raise HTTPException(status_code=413, detail="payload too large")
+
+    # Verify the secret token. Fail closed: if the channel is enabled but no
+    # secret is configured, reject rather than accept anonymous posts.
+    secret = _state.get("telegram_secret")
+    if secret:
+        if request.headers.get(SECRET_HEADER) != secret:
+            raise HTTPException(status_code=401, detail="invalid Telegram secret token")
+    elif _state.get("channel_enabled"):
+        raise HTTPException(status_code=401, detail="webhook secret not configured")
+
+    if _rate_limited(f"tg:{_client_key(request)}", max_calls=60, window_s=60.0):
+        raise HTTPException(status_code=429, detail="rate limited")
+
+    payload = await request.json()
+    inbound = parse_update(payload)
+    if inbound is None or not inbound.text.strip():
+        return {"ok": True, "skipped": True}
+    inbound.text = inbound.text[:MAX_INBOUND_CHARS]
+
+    seller = _state.get("seller")
+    products = _state.get("products", [])
+    policy = _state.get("policy")
+    if not seller or not policy:
+        raise HTTPException(status_code=500, detail="Service not initialized")
+
+    conversation_id = f"tg:{inbound.chat_id}"
+    store = _store()
+    conversation = store.get_conversation(conversation_id)
+    if conversation is None:
+        conversation = Conversation(
+            seller_id=seller.id,
+            customer_name=inbound.sender_name,
+            customer_initials=initials_of(inbound.sender_name),
+            channel="Telegram",
+            status=ConversationStatus.AWAITING_REPLY,
+        )
+    conversation.add_message(
+        direction=MessageDirection.INBOUND,
+        sender_name=inbound.sender_name,
+        body=inbound.text,
+    )
+    store.save_conversation(conversation_id, conversation)
+
+    telegram = _state.get("telegram")
+    if telegram is not None:
+        try:
+            await telegram.send_chat_action(inbound.chat_id, "typing")
+        except Exception:
+            logger.debug("Telegram typing action failed", exc_info=True)
+
+    # Ground a draft reply behind the approval gate. The per-run decision log is
+    # a ContextVar, so no global lock is needed; run on this loop (MCP-safe).
+    try:
+        runner = create_runner(
+            seller,
+            products,
+            policy,
+            repository=_state.get("repository"),
+            use_mcp=_state.get("use_mcp"),
+        )
+        result = await run_agent_async(runner, inbound.text)
+    except Exception:
+        logger.exception("Agent run failed for Telegram chat %s", inbound.chat_id)
+        return {"ok": True, "pending": False, "error": "agent_run_failed"}
+
+    pending = bool(result.success and result.draft)
+    if pending:
+        store.set_pending(
+            conversation_id,
+            {
+                "draft_id": f"draft_{conversation_id}",
+                "body": result.draft,
+                "sources": result.draft_sources,
+                "status": "pending",
+                "channel": "telegram",
+                "chat_id": inbound.chat_id,
+            },
+        )
+    return {"ok": True, "conversation_id": conversation_id, "pending": pending}
+
+
 @app.post("/api/eval")
-async def run_trust_scorecard(limit: int = 6) -> dict[str, Any]:
+async def run_trust_scorecard(http_request: Request, limit: int = 6) -> dict[str, Any]:
     """Run the Trust Scorecard: the multi-agent team vs the naive baseline.
 
     Runs adversarial scenarios through both systems and scores each reply for
@@ -667,6 +866,11 @@ async def run_trust_scorecard(limit: int = 6) -> dict[str, Any]:
     many scenarios run live (each issues real Gemini calls), defaulting to 6 to
     keep latency and token spend reasonable for an interactive demo.
     """
+    # The scorecard issues many Gemini calls; rate-limit it tightly.
+    if _rate_limited(f"eval:{_client_key(http_request)}", max_calls=4, window_s=60.0):
+        raise HTTPException(status_code=429, detail="rate limited")
+    limit = max(1, min(limit, 12))
+
     seller = _state.get("seller")
     products = _state.get("products", [])
     policy = _state.get("policy")

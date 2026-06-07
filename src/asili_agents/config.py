@@ -70,6 +70,20 @@ class Settings(BaseSettings):
         description="Command used to launch the MongoDB MCP server.",
     )
 
+    # Telegram channel (customer DM transport)
+    telegram_bot_token: str | None = Field(
+        default=None,
+        description="Telegram bot token from @BotFather. Enables the Telegram channel.",
+    )
+    telegram_webhook_secret: str | None = Field(
+        default=None,
+        description="Secret echoed by Telegram in the X-Telegram-Bot-Api-Secret-Token header.",
+    )
+    public_base_url: str | None = Field(
+        default=None,
+        description="Public base URL of this service, used to register the Telegram webhook.",
+    )
+
     # API
     api_host: str = Field(default="0.0.0.0")
     api_port: int = Field(default=8080)
