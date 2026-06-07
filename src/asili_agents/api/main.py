@@ -30,6 +30,7 @@ from asili_agents.data.models import (
 )
 from asili_agents.data.repository import set_catalog_repository
 from asili_agents.data.seed import get_demo_seller
+from asili_agents.data.store import ConversationStore, InMemoryStore, MongoStore
 from asili_agents.eval.runner import build_live_reply_fns_async, run_scorecard_async
 from asili_agents.integrations.telegram import (
     SECRET_HEADER,
@@ -77,6 +78,11 @@ def _rate_limited(key: str, max_calls: int, window_s: float) -> bool:
 
 def _client_key(request: Request) -> str:
     return request.client.host if request.client else "unknown"
+
+
+def _store() -> ConversationStore:
+    store: ConversationStore = _state["store"]
+    return store
 
 
 @asynccontextmanager
@@ -163,18 +169,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _state["runners"] = {}  # conversation_id -> runner
     _rate_state.clear()
 
-    # Set up approval callback to store pending drafts
+    # Durable store: MongoDB when Atlas is connected (survives restarts + shared
+    # across instances), else in-memory wrapping the dicts above (local/tests).
+    store: ConversationStore = InMemoryStore(_state["conversations"], _state["pending_drafts"])
+    if data_source == "atlas" and settings.mongodb_uri:
+        try:
+            store = MongoStore(settings.mongodb_uri, settings.mongodb_database)
+            logger.info("Durable conversation store: MongoDB.")
+        except Exception:
+            logger.exception("MongoStore init failed — using in-memory store.")
+            store = InMemoryStore(_state["conversations"], _state["pending_drafts"])
+    _state["store"] = store
+
+    # The agent's send_for_approval just marks the draft PENDING; the real
+    # pending draft (keyed by conversation) is persisted by the endpoints via the
+    # store. This callback only guarantees the agent never auto-sends.
     def approval_callback(draft_id: str, body: str) -> ApprovalResult:
-        # Store the draft as pending - actual approval happens via /api/approve
-        _state["pending_drafts"][draft_id] = {
-            "body": body,
-            "status": "pending",
-        }
-        return ApprovalResult(
-            status=ApprovalStatus.PENDING,
-            draft_id=draft_id,
-            body=body,
-        )
+        return ApprovalResult(status=ApprovalStatus.PENDING, draft_id=draft_id, body=body)
 
     set_approval_callback(approval_callback)
 
@@ -448,7 +459,7 @@ async def create_conversation(customer_name: str = "Dana R.") -> ConversationRes
     from asili_agents.data.seed import create_demo_conversation
 
     conversation = create_demo_conversation()
-    _state["conversations"][str(conversation.id)] = conversation
+    _store().save_conversation(str(conversation.id), conversation)
 
     return _conversation_to_response(conversation)
 
@@ -456,13 +467,13 @@ async def create_conversation(customer_name: str = "Dana R.") -> ConversationRes
 @app.get("/api/conversations/{conversation_id}", response_model=ConversationResponse)
 async def get_conversation(conversation_id: str) -> ConversationResponse:
     """Get a conversation by ID."""
-    conversation = _state["conversations"].get(conversation_id)
+    conversation = _store().get_conversation(conversation_id)
     if not conversation:
         # Create default demo conversation
         from asili_agents.data.seed import create_demo_conversation
 
         conversation = create_demo_conversation()
-        _state["conversations"][str(conversation.id)] = conversation
+        _store().save_conversation(str(conversation.id), conversation)
 
     return _conversation_to_response(conversation)
 
@@ -493,7 +504,8 @@ async def get_inbox() -> list[dict[str, Any]]:
     new messages. Conversations with a pending draft are surfaced first.
     """
     items: list[dict[str, Any]] = []
-    for conversation_id, conversation in _state.get("conversations", {}).items():
+    store = _store()
+    for conversation_id, conversation in store.list_conversations():
         last = conversation.messages[-1] if conversation.messages else None
         items.append(
             {
@@ -504,7 +516,7 @@ async def get_inbox() -> list[dict[str, Any]]:
                 "status": conversation.status.value,
                 "last_message": last.body if last else "",
                 "last_direction": last.direction.value if last else None,
-                "has_pending": conversation_id in _state.get("pending_drafts", {}),
+                "has_pending": store.has_pending(conversation_id),
             }
         )
     # Pending drafts first (seller's action queue), then everything else.
@@ -516,8 +528,7 @@ async def get_inbox() -> list[dict[str, Any]]:
 async def reset_demo() -> dict[str, str]:
     """Reset the demo state."""
     clear_decision_log()
-    _state["conversations"] = {}
-    _state["pending_drafts"] = {}
+    _store().clear()
     _state["runners"] = {}
 
     # Reinitialize with fresh demo data
@@ -549,18 +560,21 @@ async def run_agents(request: RunAgentsRequest, http_request: Request) -> RunAge
         raise HTTPException(status_code=500, detail="Demo data not initialized")
 
     # Get or create conversation
-    conversation = _state["conversations"].get(request.conversation_id)
+    store = _store()
+    conversation = store.get_conversation(request.conversation_id)
     if not conversation:
         from asili_agents.data.seed import create_demo_conversation
 
         conversation = create_demo_conversation()
-        _state["conversations"][str(conversation.id)] = conversation
+        store.save_conversation(str(conversation.id), conversation)
 
     # Get the customer message (use provided or last inbound message)
     if request.message:
         customer_message = request.message
     else:
-        inbound_messages = [m for m in conversation.messages if m.direction.value == "inbound"]
+        inbound_messages = [
+            m for m in conversation.messages if m.direction == MessageDirection.INBOUND
+        ]
         if not inbound_messages:
             raise HTTPException(status_code=400, detail="No customer message found")
         customer_message = inbound_messages[-1].body
@@ -583,13 +597,15 @@ async def run_agents(request: RunAgentsRequest, http_request: Request) -> RunAge
 
     # Store the draft for approval
     if result.draft:
-        draft_id = f"draft_{request.conversation_id}"
-        _state["pending_drafts"][request.conversation_id] = {
-            "draft_id": draft_id,
-            "body": result.draft,
-            "sources": result.draft_sources,
-            "status": "pending",
-        }
+        store.set_pending(
+            request.conversation_id,
+            {
+                "draft_id": f"draft_{request.conversation_id}",
+                "body": result.draft,
+                "sources": result.draft_sources,
+                "status": "pending",
+            },
+        )
 
     # Build response
     steps = [
@@ -638,18 +654,21 @@ async def run_baseline_agent(request: RunAgentsRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Demo data not initialized")
 
     # Get or create conversation
-    conversation = _state["conversations"].get(request.conversation_id)
+    store = _store()
+    conversation = store.get_conversation(request.conversation_id)
     if not conversation:
         from asili_agents.data.seed import create_demo_conversation
 
         conversation = create_demo_conversation()
-        _state["conversations"][str(conversation.id)] = conversation
+        store.save_conversation(str(conversation.id), conversation)
 
     # Get the customer message
     if request.message:
         customer_message = request.message
     else:
-        inbound_messages = [m for m in conversation.messages if m.direction.value == "inbound"]
+        inbound_messages = [
+            m for m in conversation.messages if m.direction == MessageDirection.INBOUND
+        ]
         if not inbound_messages:
             raise HTTPException(status_code=400, detail="No customer message found")
         customer_message = inbound_messages[-1].body
@@ -675,21 +694,25 @@ async def approve_draft(request: ApprovalRequest) -> ApprovalResponse:
     - edit: Send the edited version
     - reject: Discard the draft
     """
-    pending = _state["pending_drafts"].get(request.conversation_id)
+    store = _store()
+    pending = store.get_pending(request.conversation_id)
     if not pending:
         raise HTTPException(status_code=404, detail="No pending draft for this conversation")
 
-    conversation = _state["conversations"].get(request.conversation_id)
+    conversation = store.get_conversation(request.conversation_id)
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     if request.action == "reject":
-        # Discard the draft
-        del _state["pending_drafts"][request.conversation_id]
+        store.delete_pending(request.conversation_id)
         return ApprovalResponse(status="rejected", message=None)
 
     # Approve or edit
-    final_body = request.edited_body if request.action == "edit" else pending["body"]
+    final_body = str(
+        request.edited_body
+        if request.action == "edit" and request.edited_body
+        else pending.get("body", "")
+    )
 
     # Deliver over the originating channel (Telegram), if the draft came from one.
     telegram = _state.get("telegram")
@@ -709,8 +732,9 @@ async def approve_draft(request: ApprovalRequest) -> ApprovalResponse:
     )
     message.status = MessageStatus.SENT
 
-    # Clear the pending draft
-    del _state["pending_drafts"][request.conversation_id]
+    # Persist the updated conversation + clear the pending draft.
+    store.save_conversation(request.conversation_id, conversation)
+    store.delete_pending(request.conversation_id)
 
     return ApprovalResponse(
         status="approved" if request.action == "approve" else "edited",
@@ -730,7 +754,7 @@ async def approve_draft(request: ApprovalRequest) -> ApprovalResponse:
 @app.get("/api/pending/{conversation_id}")
 async def get_pending_draft(conversation_id: str) -> dict[str, Any]:
     """Get the pending draft for a conversation, if any."""
-    pending = _state["pending_drafts"].get(conversation_id)
+    pending = _store().get_pending(conversation_id)
     if not pending:
         return {"has_pending": False}
 
@@ -778,7 +802,8 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail="Service not initialized")
 
     conversation_id = f"tg:{inbound.chat_id}"
-    conversation = _state["conversations"].get(conversation_id)
+    store = _store()
+    conversation = store.get_conversation(conversation_id)
     if conversation is None:
         conversation = Conversation(
             seller_id=seller.id,
@@ -787,12 +812,12 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
             channel="Telegram",
             status=ConversationStatus.AWAITING_REPLY,
         )
-        _state["conversations"][conversation_id] = conversation
     conversation.add_message(
         direction=MessageDirection.INBOUND,
         sender_name=inbound.sender_name,
         body=inbound.text,
     )
+    store.save_conversation(conversation_id, conversation)
 
     telegram = _state.get("telegram")
     if telegram is not None:
@@ -818,14 +843,17 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
 
     pending = bool(result.success and result.draft)
     if pending:
-        _state["pending_drafts"][conversation_id] = {
-            "draft_id": f"draft_{conversation_id}",
-            "body": result.draft,
-            "sources": result.draft_sources,
-            "status": "pending",
-            "channel": "telegram",
-            "chat_id": inbound.chat_id,
-        }
+        store.set_pending(
+            conversation_id,
+            {
+                "draft_id": f"draft_{conversation_id}",
+                "body": result.draft,
+                "sources": result.draft_sources,
+                "status": "pending",
+                "channel": "telegram",
+                "chat_id": inbound.chat_id,
+            },
+        )
     return {"ok": True, "conversation_id": conversation_id, "pending": pending}
 
 
