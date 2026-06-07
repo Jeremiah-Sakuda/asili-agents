@@ -8,6 +8,7 @@ This API provides:
 """
 
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -53,6 +54,29 @@ logger = logging.getLogger("asili.api")
 
 # Application state
 _state: dict[str, Any] = {}
+
+# Inbound payload + abuse guards. The service is deployed --allow-unauthenticated
+# and some endpoints issue billable Gemini calls, so cap body size and rate-limit
+# the expensive/agent endpoints (best-effort, per-process sliding window).
+MAX_WEBHOOK_BYTES = 64 * 1024
+MAX_INBOUND_CHARS = 2000
+_rate_state: dict[str, list[float]] = {}
+
+
+def _rate_limited(key: str, max_calls: int, window_s: float) -> bool:
+    """Return True if `key` has exceeded `max_calls` within `window_s` seconds."""
+    now = time.monotonic()
+    recent = [t for t in _rate_state.get(key, []) if now - t < window_s]
+    if len(recent) >= max_calls:
+        _rate_state[key] = recent
+        return True
+    recent.append(now)
+    _rate_state[key] = recent
+    return False
+
+
+def _client_key(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
 
 
 @asynccontextmanager
@@ -126,11 +150,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         TelegramClient(settings.telegram_bot_token) if settings.telegram_bot_token else None
     )
     _state["telegram_secret"] = settings.telegram_webhook_secret
-    if _state["telegram"]:
+    _state["channel_enabled"] = bool(settings.telegram_bot_token)
+    if _state["channel_enabled"]:
         logger.info("Telegram channel enabled.")
+        if not settings.telegram_webhook_secret:
+            logger.error(
+                "TELEGRAM_BOT_TOKEN is set but TELEGRAM_WEBHOOK_SECRET is not — the "
+                "webhook will reject all requests (fail closed). Set a webhook secret."
+            )
     _state["conversations"] = {}
     _state["pending_drafts"] = {}  # conversation_id -> draft info
     _state["runners"] = {}  # conversation_id -> runner
+    _rate_state.clear()
 
     # Set up approval callback to store pending drafts
     def approval_callback(draft_id: str, body: str) -> ApprovalResult:
@@ -501,12 +532,15 @@ async def reset_demo() -> dict[str, str]:
 
 
 @app.post("/api/run", response_model=RunAgentsResponse)
-async def run_agents(request: RunAgentsRequest) -> RunAgentsResponse:
+async def run_agents(request: RunAgentsRequest, http_request: Request) -> RunAgentsResponse:
     """Run the multi-agent system on a conversation.
 
     This endpoint executes the real ADK agents on the customer message,
     returning the agent steps, grounded facts, and composed draft reply.
     """
+    if _rate_limited(f"run:{_client_key(http_request)}", max_calls=30, window_s=60.0):
+        raise HTTPException(status_code=429, detail="rate limited")
+
     seller = _state.get("seller")
     products = _state.get("products", [])
     policy = _state.get("policy")
@@ -714,14 +748,28 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
     the seller approves (POST /api/approve), at which point it is delivered back
     to the customer's Telegram chat. This preserves the human-approval gate.
     """
+    # Reject oversized bodies before reading them.
+    content_length = request.headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > MAX_WEBHOOK_BYTES:
+        raise HTTPException(status_code=413, detail="payload too large")
+
+    # Verify the secret token. Fail closed: if the channel is enabled but no
+    # secret is configured, reject rather than accept anonymous posts.
     secret = _state.get("telegram_secret")
-    if secret and request.headers.get(SECRET_HEADER) != secret:
-        raise HTTPException(status_code=401, detail="invalid Telegram secret token")
+    if secret:
+        if request.headers.get(SECRET_HEADER) != secret:
+            raise HTTPException(status_code=401, detail="invalid Telegram secret token")
+    elif _state.get("channel_enabled"):
+        raise HTTPException(status_code=401, detail="webhook secret not configured")
+
+    if _rate_limited(f"tg:{_client_key(request)}", max_calls=60, window_s=60.0):
+        raise HTTPException(status_code=429, detail="rate limited")
 
     payload = await request.json()
     inbound = parse_update(payload)
     if inbound is None or not inbound.text.strip():
         return {"ok": True, "skipped": True}
+    inbound.text = inbound.text[:MAX_INBOUND_CHARS]
 
     seller = _state.get("seller")
     products = _state.get("products", [])
@@ -782,7 +830,7 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
 
 
 @app.post("/api/eval")
-async def run_trust_scorecard(limit: int = 6) -> dict[str, Any]:
+async def run_trust_scorecard(http_request: Request, limit: int = 6) -> dict[str, Any]:
     """Run the Trust Scorecard: the multi-agent team vs the naive baseline.
 
     Runs adversarial scenarios through both systems and scores each reply for
@@ -790,6 +838,11 @@ async def run_trust_scorecard(limit: int = 6) -> dict[str, Any]:
     many scenarios run live (each issues real Gemini calls), defaulting to 6 to
     keep latency and token spend reasonable for an interactive demo.
     """
+    # The scorecard issues many Gemini calls; rate-limit it tightly.
+    if _rate_limited(f"eval:{_client_key(http_request)}", max_calls=4, window_s=60.0):
+        raise HTTPException(status_code=429, detail="rate limited")
+    limit = max(1, min(limit, 12))
+
     seller = _state.get("seller")
     products = _state.get("products", [])
     policy = _state.get("policy")

@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from asili_agents.api import main as main_module
-from asili_agents.api.main import app
+from asili_agents.api.main import _rate_limited, app
 from asili_agents.data.models import Conversation, ConversationStatus, MessageDirection
 from asili_agents.integrations.telegram import initials_of, parse_update
 from asili_agents.runner import RunResult
@@ -152,6 +152,28 @@ class TestApproveDelivers:
         r = client.post("/api/approve", json={"conversation_id": cid, "action": "approve"})
         assert r.status_code == 200, r.text
         assert fake_tg.sent == [("777", "Yes, 6 tins.")]
+
+
+class TestSecurity:
+    def test_rate_limited_helper(self):
+        key = "unit-rate-key"
+        assert _rate_limited(key, max_calls=3, window_s=60.0) is False
+        assert _rate_limited(key, max_calls=3, window_s=60.0) is False
+        assert _rate_limited(key, max_calls=3, window_s=60.0) is False
+        assert _rate_limited(key, max_calls=3, window_s=60.0) is True
+
+    def test_webhook_fail_closed_when_enabled_without_secret(self, client, monkeypatch):
+        monkeypatch.setitem(main_module._state, "channel_enabled", True)
+        monkeypatch.setitem(main_module._state, "telegram_secret", None)
+        r = client.post(
+            "/api/telegram/webhook", json={"message": {"chat": {"id": 1}, "text": "hi"}}
+        )
+        assert r.status_code == 401
+
+    def test_webhook_rejects_oversized_payload(self, client):
+        big = "x" * 70000
+        r = client.post("/api/telegram/webhook", json={"message": {"chat": {"id": 1}, "text": big}})
+        assert r.status_code == 413
 
 
 class TestInbox:
