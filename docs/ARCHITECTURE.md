@@ -45,11 +45,11 @@ flowchart TB
 
     subgraph Atlas["🍃 MongoDB Atlas"]
         READDB[("products · policy ·\nconversations\n(read)")]
-        WRITEDB[("drafts · decisions ·\neval_runs\n(audited writes)")]
+        WRITEDB[("conversations · drafts\n(audited writes → Atlas)\ndecisions · eval_runs (in-process)")]
     end
 
     subgraph Control["Control — separate, no tools"]
-        BASE["🤖 Baseline Agent\n(single LlmAgent · Gemini)\nno tools · catalog stuffed in prompt\ndesigned to hallucinate + breach margin"]
+        BASE["🤖 Baseline Agent\n(single LlmAgent · Gemini)\nfair control: full catalog in prompt\nno live grounding · no pricing tool"]
     end
 
     UI -->|"POST /api/run"| API
@@ -124,7 +124,7 @@ A Gemini `LlmAgent` (`agents/pricing.py`) whose first rule is "**never** calcula
 - It sums line prices and line costs exactly.
 - It computes the minimum price that holds the margin floor: `min_price = total_cost / (1 - margin_floor)`.
 - The bundle price is `max(discounted_price, min_price_for_margin)` — so a discount that would breach the floor is silently clamped **up** to the floor.
-- It rounds to the cent with `ROUND_HALF_UP` and returns `is_margin_safe`, the actual `margin_percent`, and a human-readable `rationale`.
+- It rounds the floor-holding price **up** to the cent with `ROUND_CEILING` (so rounding can never drop the quote below the floor), decides `is_margin_safe` in **exact Decimal** space against the Decimal floor, and returns the actual `margin_percent` and a human-readable `rationale`.
 
 Because the floor is enforced by a `max()` over Decimals rather than by a prompt, the team **cannot** quote below margin even if the LLM "wanted" to.
 
