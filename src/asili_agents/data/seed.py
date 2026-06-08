@@ -32,6 +32,7 @@ def create_mahaba_tea_seller() -> Seller:
     return Seller(
         id=MAHABA_TEA_ID,
         name="Mahaba Tea Co.",
+        category="specialty tea",
         brand_voice=(
             "Warm and knowledgeable about tea. We share the story behind each product "
             "and help customers find their perfect cup. Friendly but professional, "

@@ -113,6 +113,7 @@ def create_runner(
         lane=seller.lane,
         margin_floor=policy.margin_floor,
         use_mcp=use_mcp,
+        seller_category=seller.category,
     )
 
     return InMemoryRunner(agent=agent)
@@ -142,6 +143,7 @@ def create_baseline_runner(
     agent = create_baseline_agent(
         seller_name=seller.name,
         catalog_dump=catalog_dump,
+        seller_category=seller.category,
     )
 
     return InMemoryRunner(agent=agent)

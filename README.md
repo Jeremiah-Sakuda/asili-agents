@@ -1,9 +1,9 @@
 # Asili — the AI ops team that can prove it never lied
 
-> **Rapid Agent Hackathon · MongoDB track.** A Google ADK multi-agent operations team for underrepresented micro-sellers. Every customer-facing answer is grounded in the seller's **live MongoDB Atlas catalog** (read through the **MongoDB MCP server**, `--readOnly`), priced by a **deterministic Python margin engine**, and held behind a **one-tap human approval gate**. A built-in **Trust Scorecard** runs adversarial scenarios through the team and scores hallucination, margin-safety, and groundedness against a deliberately-naive single-agent baseline — so the system's honesty is a measured number, not a marketing claim.
+> **Rapid Agent Hackathon · MongoDB track.** A Google ADK multi-agent operations team for underrepresented micro-sellers. Every customer-facing answer is grounded in the seller's **live MongoDB Atlas catalog** (read through the **MongoDB MCP server**, `--readOnly`), priced by a **deterministic Python margin engine**, and held behind a **one-tap human approval gate**. A built-in **Trust Scorecard** runs adversarial scenarios through the team and scores hallucination, margin-safety, and groundedness against a **fair single-agent baseline** (the same catalog in its prompt, minus the live grounding and the pricing engine) — so the system's honesty is a measured number, not a marketing claim.
 
 > 🔗 **Live demo:** **https://asili-agents-u42sxjnqkq-uc.a.run.app/app/** — grounded in live MongoDB Atlas via the MongoDB MCP server (`GET /` shows `data_source: atlas`, `mcp_grounding: true`).
-> 📺 **Demo video:** _add your YouTube/Vimeo link_ · 🗂️ Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+> 📺 **Demo video:** added with the final submission — the **[live demo](https://asili-agents-u42sxjnqkq-uc.a.run.app/app/)** above is fully interactive in the meantime. · 🗂️ Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ---
 
@@ -102,7 +102,7 @@ Nothing reaches a customer automatically. Each composed reply becomes a **pendin
 `POST /api/eval` runs a battery of adversarial scenarios ("promise me 50 in stock," "give me 40% off") through **two** systems:
 
 - **The team** — full ADK topology, MCP-grounded, deterministic pricing, as above.
-- **The baseline** — a single agent with **no tools**, designed to fail: it hallucinates stock and quotes below margin exactly the way a naive chatbot would.
+- **The baseline** — a *fair* single agent that gets the **full catalog in its prompt** (stock, cost, the 45% rule) and a careful instruction to answer accurately. What it lacks is the team's **live grounding** and **deterministic pricing tool**, so it still recalls stock imperfectly and free-hands margin math. The delta is therefore architecture, not a data handicap.
 
 Each scenario is scored on three axes:
 
@@ -124,19 +124,19 @@ MongoDB Atlas is the **system of record**. The agents never hold a private copy 
 
 **Collections (Atlas):**
 
-| Collection | Holds |
-| --- | --- |
-| `products` | The live catalog — SKU, name, description, `price`, `cost`, `stock_quantity`, thresholds. The one source of inventory truth. |
-| `policy` | The seller's commercial rules — `margin_floor` (0.45), bundle discount limits, shipping and returns notes. |
-| `conversations` | Customer threads and their messages, with direction, status, and timestamps. |
-| `drafts` | Pending agent replies awaiting the approval gate, with their cited sources. |
-| `decisions` | The glass-box trace — every routing, grounding, and composition step the agents logged. |
-| `eval_runs` | Persisted Trust Scorecard results, so honesty is auditable over time, not just in the moment. |
+| Collection | Holds | Status |
+| --- | --- | --- |
+| `products` | The live catalog — SKU, name, description, `price`, `cost`, `stock_quantity`, thresholds. The one source of inventory truth. | **Live** — read via the MCP server (`--readOnly`) |
+| `policy` | The seller's commercial rules — `margin_floor` (0.45), bundle discount limits, shipping and returns notes. | **Live** — read via MCP |
+| `conversations` | Customer threads and their messages, with direction, status, and timestamps. | **Persisted** (`MongoStore`) |
+| `drafts` | Pending agent replies awaiting the approval gate, with their cited sources. | **Persisted** (`MongoStore`) |
+| `decisions` | The glass-box trace — every routing, grounding, and composition step the agents logged. | In-process today; persistence is the remaining increment |
+| `eval_runs` | Trust Scorecard results — the schema for auditing honesty over time. | In-process today; persistence is the remaining increment |
 
 **Two clearly separated access paths:**
 
 - **Agent reads → MongoDB MCP server, `--readOnly`.** Everything an agent learns about the catalog comes through MCP, and MCP cannot write. This is the grounding guarantee.
-- **App writes → audited application path.** Persisting a conversation, a draft, an approval decision, or an eval run goes through the application's own write path — never through the agent's tools. Writes are deliberate, attributable, and kept out of the model's reach.
+- **App writes → audited application path.** Persisting a conversation or a draft goes through the application's own write path (`data/store.py`) — never through the agent's tools — so the inbox and the approval queue survive restarts and span Cloud Run instances. (The decision trace and eval-run history are in-process today; persisting them the same way is the remaining increment.) Writes are deliberate, attributable, and kept out of the model's reach.
 
 This split is the whole point: the model can *see* the truth but can't *change* it, and every change that does happen is made by code we can audit.
 
@@ -239,7 +239,7 @@ The demo question — *"Do you have the purple tea in stock? Can you do a bundle
 | | Stock answer | Bundle quote | Margin |
 | --- | --- | --- | --- |
 | **The team** | "In stock — 6 tins left" (read from catalog) | ~$34 for 2 tins | ~57% ✅ floor held |
-| **Naive baseline** | "32 tins!" (hallucinated) | "30% off, $25.20" | below floor ❌ |
+| **Fair baseline** (catalog in prompt, no live grounding / pricing tool) | "32 tins!" (misremembered) | "30% off, $25.20" | below floor ❌ |
 
 ---
 
@@ -247,9 +247,9 @@ The demo question — *"Do you have the purple tea in stock? Can you do a bundle
 
 This README makes no claims the code doesn't back:
 
-- **The deterministic margin engine, the ADK multi-agent topology, the approval gate, the naive baseline, and the Trust Scorecard are implemented in this repository**, not mocked for a screenshot. The pricing math is plain Python you can read in `src/asili_agents/tools/pricing.py`, and the scorecard's metrics are computed from actual agent runs.
+- **The deterministic margin engine, the ADK multi-agent topology, the approval gate, the fair single-agent baseline, and the Trust Scorecard are implemented in this repository**, not mocked for a screenshot. The pricing math is plain Python you can read in `src/asili_agents/tools/pricing.py`, and the scorecard's metrics are computed from actual agent runs.
 - **Grounding is MongoDB.** In the deployed configuration the agent's catalog knowledge comes through the MongoDB MCP server against Atlas (with an in-process fallback for local dev/tests). **This project does not use Vertex AI Search or a RAG retrieval pipeline** — that approach was considered and removed, and no part of this submission depends on it.
-- **The numbers in this document are reproducible.** The ~$34 / ~57% bundle is what the deterministic engine actually returns for two tins of Purple Tea; the baseline's failures are what a tool-less agent actually produces. Run `POST /api/eval` and check for yourself — that re-runnability is the point.
+- **The numbers in this document are reproducible.** The ~$34 / ~57% bundle is what the deterministic engine actually returns for two tins of Purple Tea; the baseline's slips are what a fair, catalog-in-prompt single agent actually produces without live grounding or a pricing tool. Run `POST /api/eval` and check for yourself — that re-runnability is the point.
 
 If a claim here isn't true in the code, that's a bug, and we'd rather fix it than ship it. An ops team that can't prove its honesty has no business making promises on a founder's behalf.
 
@@ -272,7 +272,7 @@ The build deliberately focuses on the seller-facing operations agents and the de
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — setup, project structure, configuration (env vars), and tooling
 - [docs/TRUST_SCORECARD.md](docs/TRUST_SCORECARD.md) — how the deterministic scorer works and its honest limits
 - [docs/TELEGRAM.md](docs/TELEGRAM.md) — the Telegram customer-DM channel (webhook → approval gate → delivery)
-- [BY_HAND.md](BY_HAND.md) — manual steps to finish deployment / submission
+- [BY_HAND.md](BY_HAND.md) — founder's submission checklist (demo video, Devpost form, secret rotation); the code prerequisites are done and verified live
 
 ---
 

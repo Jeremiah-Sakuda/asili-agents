@@ -28,6 +28,7 @@ def create_mama_ngozi_seller() -> Seller:
     return Seller(
         id=MAMA_NGOZI_ID,
         name="Mama Ngozi Foods",
+        category="West African shea butter & pantry goods",
         brand_voice=(
             "Warm, motherly, and proud of West African heritage. We speak about "
             "shea and palm with the care of a family kitchen, sharing how each "
@@ -165,6 +166,7 @@ def create_ti_piment_seller() -> Seller:
     return Seller(
         id=TI_PIMENT_ID,
         name="Ti Piment",
+        category="Haitian hot sauces & pantry goods",
         brand_voice=(
             "Bold, playful, and proudly Haitian. We talk heat with a wink — "
             "honest about how spicy each sauce really is and how to use it. "

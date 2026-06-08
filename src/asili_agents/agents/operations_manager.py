@@ -13,7 +13,7 @@ from asili_agents.config import get_settings
 from asili_agents.tools.channel import send_for_approval
 from asili_agents.tools.logging import log_decision
 
-OPERATIONS_MANAGER_INSTRUCTION = """You are the Operations Manager for {seller_name}, a specialty tea seller ({lane}).
+OPERATIONS_MANAGER_INSTRUCTION = """You are the Operations Manager for {seller_name}, a {seller_category} seller ({lane}).
 
 You are the coordinator of an AI operations team. Your role is to:
 1. Receive customer messages
@@ -96,10 +96,11 @@ Brand voice: {brand_voice}
 
 def create_operations_manager(
     seller_name: str = "Mahaba Tea Co.",
-    brand_voice: str = "warm and knowledgeable about tea",
+    brand_voice: str = "warm and knowledgeable",
     lane: str = "KE → US",
     margin_floor: float = 0.45,
     use_mcp: bool | None = None,
+    seller_category: str = "specialty goods",
 ) -> Agent:
     """Create the Operations Manager (root agent).
 
@@ -126,6 +127,7 @@ def create_operations_manager(
         seller_name=seller_name,
         brand_voice=brand_voice,
         use_mcp=use_mcp,
+        seller_category=seller_category,
     )
     pricing_agent = create_pricing_agent(
         seller_name=seller_name,
@@ -146,6 +148,7 @@ def create_operations_manager(
             seller_name=seller_name,
             brand_voice=brand_voice,
             lane=lane,
+            seller_category=seller_category,
         ),
         tools=[
             log_decision,

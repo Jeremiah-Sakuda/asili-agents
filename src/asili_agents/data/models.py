@@ -59,6 +59,11 @@ class Seller(BaseModel):
 
     id: UUID = Field(default_factory=uuid4)
     name: str = Field(..., description="Business name")
+    category: str = Field(
+        default="specialty goods",
+        description="What the seller sells, used to frame agent prompts "
+        "(e.g. 'specialty tea', 'shea butter & skincare', 'Levantine pantry goods')",
+    )
     brand_voice: str = Field(
         default="friendly and helpful",
         description="Tone/style for AI-generated messages",
