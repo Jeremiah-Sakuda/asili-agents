@@ -83,7 +83,18 @@ class MongoStore:
     ) -> None:
         from pymongo import MongoClient
 
-        self._client: MongoClient[dict[str, Any]] = MongoClient(uri)
+        # Bounded timeouts (PyMongo defaults to 30s). Crucially, MongoClient
+        # connects lazily, so without an explicit ping here a bad/unreachable
+        # Atlas would NOT surface at construction — it would instead stall ~30s
+        # inside the first request handler and defeat the caller's startup
+        # try/except fallback. The ping makes connection failures fail fast and
+        # eagerly, so the API can fall back to the in-memory store at startup.
+        self._client: MongoClient[dict[str, Any]] = MongoClient(
+            uri,
+            serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=5000,
+        )
+        self._client.admin.command("ping")
         db = self._client[database]
         self._conversations = db[conversations_collection]
         self._drafts = db[drafts_collection]

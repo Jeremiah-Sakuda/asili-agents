@@ -5,10 +5,13 @@ FROM node:20-slim AS node
 
 FROM python:3.11-slim
 
+# MCP_SERVER_COMMAND points the app at the version-pinned binary baked below, so
+# the agents never resolve/download mongodb-mcp-server from npm at runtime.
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=8080 \
-    NPM_CONFIG_CACHE=/home/appuser/.npm
+    NPM_CONFIG_CACHE=/home/appuser/.npm \
+    MCP_SERVER_COMMAND=/usr/local/bin/mongodb-mcp-server
 
 WORKDIR /app
 
@@ -30,10 +33,13 @@ COPY src/ ./src/
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir .
 
-# --- Pre-cache the MongoDB MCP server so the first agent call doesn't pay a
-#     cold download (npx will use this global install). Non-fatal if it fails. ---
-RUN npm install -g mongodb-mcp-server@latest \
-    || echo "WARN: mongodb-mcp-server preinstall failed; npx will fetch it at runtime"
+# --- Bake the MongoDB MCP server at an EXACT pinned version (supply-chain
+#     hardening). Installed globally as root so the binary lands on /usr/local/bin
+#     (world-executable, used directly via MCP_SERVER_COMMAND). FATAL on failure:
+#     we never want the image to ship and then fetch an unpinned package from the
+#     public registry at runtime while holding the Atlas connection string. ---
+RUN npm install -g mongodb-mcp-server@1.12.0 \
+    && test -x /usr/local/bin/mongodb-mcp-server
 
 # --- Non-root user ---
 RUN useradd --create-home --shell /bin/bash appuser \

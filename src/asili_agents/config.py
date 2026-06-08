@@ -67,7 +67,27 @@ class Settings(BaseSettings):
     )
     mcp_server_command: str = Field(
         default="npx",
-        description="Command used to launch the MongoDB MCP server.",
+        description=(
+            "Command used to launch the MongoDB MCP server. 'npx' for local dev; "
+            "in the container this is overridden to the absolute path of the baked, "
+            "version-pinned binary so nothing is fetched from npm at runtime."
+        ),
+    )
+    mcp_server_package: str = Field(
+        default="mongodb-mcp-server@1.12.0",
+        description=(
+            "Exact, pinned npm spec for the MongoDB MCP server. Pinning the version "
+            "(not @latest) prevents silently executing a newly-published — possibly "
+            "compromised — release on a public endpoint that holds the Atlas string."
+        ),
+    )
+    agent_run_timeout_s: float = Field(
+        default=90.0,
+        description=(
+            "Hard ceiling (seconds) for a single agent/Gemini/MCP run. A run that "
+            "exceeds this is cancelled and the endpoint returns 504, so one "
+            "pathological request can't pin an instance for the full Cloud Run window."
+        ),
     )
 
     # Telegram channel (customer DM transport)

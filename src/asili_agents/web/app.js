@@ -47,10 +47,14 @@ function el(tag, className, html) {
   return n;
 }
 function escapeHtml(s) {
+  // Escape quotes too: several call sites interpolate into HTML that includes
+  // quoted attributes, so unescaped " or ' would allow attribute breakout.
   return String(s ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 const isInbound = (d) => d === "in" || d === "inbound";
 

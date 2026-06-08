@@ -69,14 +69,24 @@ def make_mongodb_mcp_toolset(settings: Settings | None = None) -> McpToolset | N
     from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
     from mcp import StdioServerParameters
 
-    args = ["-y", "mongodb-mcp-server"]
+    # Supply-chain hardening: never resolve+execute an unpinned package from the
+    # public npm registry at runtime. In the container the command is the absolute
+    # path of the version-pinned binary baked at build time (no network). For local
+    # dev we fall back to `npx` but still pin the exact version and prefer the
+    # already-cached copy so a fresh download is never silently executed.
+    command = settings.mcp_server_command
+    if command == "npx" or command.endswith("/npx"):
+        args = ["-y", "--prefer-offline", settings.mcp_server_package]
+    else:
+        # Direct, pre-installed binary — no package resolution at all.
+        args = []
     if settings.mcp_read_only:
         args.append("--readOnly")
 
     return McpToolset(
         connection_params=StdioConnectionParams(
             server_params=StdioServerParameters(
-                command=settings.mcp_server_command,
+                command=command,
                 args=args,
                 # The MongoDB MCP server reads the connection string from env,
                 # keeping the secret out of the process arg list.
