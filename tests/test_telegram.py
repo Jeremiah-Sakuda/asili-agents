@@ -116,7 +116,7 @@ class TestWebhook:
                 "from": {"first_name": "Dana"},
                 "chat": {"id": 555},
                 "text": "Is purple tea in stock?",
-            }
+            },
         }
         headers = {"X-Telegram-Bot-Api-Secret-Token": "topsecret"}
         r = client.post("/api/telegram/webhook", json=payload, headers=headers)

@@ -768,9 +768,7 @@ async def run_agents(request: RunAgentsRequest, http_request: Request) -> RunAge
 
 
 @app.post("/api/run/baseline")
-async def run_baseline_agent(
-    request: RunAgentsRequest, http_request: Request
-) -> dict[str, Any]:
+async def run_baseline_agent(request: RunAgentsRequest, http_request: Request) -> dict[str, Any]:
     """Run the baseline (single-model) agent for comparison.
 
     This endpoint executes the baseline agent which has no tools,
