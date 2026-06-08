@@ -58,6 +58,35 @@ function escapeHtml(s) {
 }
 const isInbound = (d) => d === "in" || d === "inbound";
 
+// Redact numeric claims (prices, percentages, quantities). The baseline never
+// reads the live catalog, so its numbers are guesses we cover with a
+// tamper-evident black bar — the visual half of the "signed receipt vs forged
+// carbon copy" contrast.
+//
+// Tokenize the RAW string and escape each segment separately, so the regex never
+// runs over HTML entities (which would corrupt e.g. an escaped apostrophe). The
+// decimal is only consumed when followed by digits, so a sentence-final "." is
+// not swallowed into the bar. Each bar carries screen-reader context (the visible
+// digits are aria-hidden) so assistive tech announces "redacted figure" rather
+// than reading the fabricated number with authority.
+function redactNumbers(s) {
+  const str = String(s ?? "");
+  const re = /\$?\d[\d,]*(?:\.\d+)?%?/g;
+  let out = "";
+  let last = 0;
+  let m;
+  while ((m = re.exec(str)) !== null) {
+    out += escapeHtml(str.slice(last, m.index));
+    out +=
+      '<span class="redacted" title="ungrounded — not from the live catalog">' +
+      '<span class="sr-only">redacted unverified figure</span>' +
+      `<span aria-hidden="true">${escapeHtml(m[0])}</span></span>`;
+    last = m.index + m[0].length;
+  }
+  out += escapeHtml(str.slice(last));
+  return out;
+}
+
 function isMcpStep(step) {
   const hay =
     `${step.agent_name} ${step.agent_role} ${step.step_type} ${step.reasoning_trace}`.toLowerCase();
@@ -262,6 +291,16 @@ function renderDraft(draft) {
   $("draftCard").hidden = false;
   $("draftBody").textContent = draft.body;
 
+  // Fresh draft -> reset the "signed receipt" state (live cursor blinks again,
+  // stamp cleared) so a new reply reads as composing-not-yet-signed.
+  const bubble = $("draftBubble");
+  if (bubble) bubble.classList.remove("is-signed");
+  const stamp = $("draftStamp");
+  if (stamp) {
+    stamp.hidden = true;
+    stamp.textContent = "";
+  }
+
   const sources = $("draftSources");
   sources.innerHTML = "";
   for (const s of draft.sources || []) {
@@ -300,8 +339,19 @@ async function approve(action, editedBody) {
     } else {
       const who = result.message ? result.message.sender_name : "the customer";
       toast.className = "result result--sent";
-      toast.textContent = `Sent ✓ — delivered to ${who}.`;
+      // Surface the trust wording in the announced toast (the rotated stamp is
+      // decorative / aria-hidden), so screen-reader users hear it too.
+      toast.textContent = `Sent ✓ — grounded reply signed, delivered to ${who}.`;
       $("draftStatusTag").textContent = action === "edit" ? "edited & sent" : "approved & sent";
+      // Sign the receipt: freeze the live cursor and land the GROUNDED stamp.
+      const bubble = $("draftBubble");
+      if (bubble) bubble.classList.add("is-signed");
+      const stamp = $("draftStamp");
+      if (stamp) {
+        const utc = new Date().toISOString().slice(11, 19) + "Z";
+        stamp.textContent = `GROUNDED ✓ · SIGNED ${utc}`;
+        stamp.hidden = false;
+      }
     }
     $("draftActions").hidden = true;
     $("editActions").hidden = true;
@@ -337,7 +387,10 @@ function renderBaseline(baseline) {
     return;
   }
   const text = baseline.response || "(no response)";
-  $("baselineBody").textContent = text;
+  // Render as a "redacted carbon copy": the baseline has no live catalog read,
+  // so any number it states is an unverified guess — black-bar it. The text is
+  // escaped FIRST, then digit runs are wrapped, so this stays injection-safe.
+  $("baselineBody").innerHTML = redactNumbers(text);
   // Show STRUCTURAL facts the server asserts about the baseline (grounded /
   // has_tools) — not a client-side re-scoring of this reply's text. Quantified
   // honesty scoring is the Trust Scorecard's job (server-side eval/scoring.py),
@@ -381,9 +434,12 @@ function renderScoreboard(data) {
   const base = data.baseline || {};
   const row = (label, t, b, goodHigh = true) => {
     const tWin = goodHigh ? (t || 0) >= (b || 0) : (t || 0) <= (b || 0);
+    // The win is signalled by color AND a screen-reader-only "(better)" marker,
+    // so it isn't conveyed by color alone (WCAG 1.4.1).
+    const winMark = tWin ? '<span class="sr-only"> (better)</span>' : "";
     return `<div class="score-row">
         <span class="score-row__label">${label}</span>
-        <span class="score-cell ${tWin ? "score-cell--win" : ""}">${pct(t)}</span>
+        <span class="score-cell ${tWin ? "score-cell--win" : ""}">${pct(t)}${winMark}</span>
         <span class="score-cell score-cell--base">${pct(b)}</span>
       </div>`;
   };

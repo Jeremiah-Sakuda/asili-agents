@@ -2,40 +2,44 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <!-- Phone-first: lock the viewport so the inbox feels like a native app -->
+  <!-- Phone-first: lock the viewport so the inbox feels like a native instrument -->
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#2A1245" />
-  <meta name="description" content="Asili — the AI ops team that can prove it never lied. Every reply grounded in the seller's live catalog." />
-  <title>Asili · Seller Inbox</title>
-  <!-- Same-origin static assets only. No CDNs, no build step. -->
+  <meta name="theme-color" content="#0B0E0C" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="description" content="Asili — the AI ops team that can prove it never lied. Every reply is a signed, tamper-evident receipt grounded in the seller's live catalog." />
+  <title>ASILI//  Trust Terminal</title>
+  <!-- Same-origin static assets only. No CDNs, no build step, no web fonts. -->
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
-  <!-- The whole app is a single phone-sized column (max ~430px). -->
-  <main class="phone" id="app" aria-live="polite">
+  <!-- Atmospheric layers (pure CSS / inline SVG, no network). -->
+  <div class="grain" aria-hidden="true"></div>
 
-    <!-- 1) HEADER: Asili wordmark + seller name + lane (from /api/seller) -->
+  <!-- The whole app is a single instrument column (max ~430px). Live regions are
+       scoped to the small status surfaces (error banner, approval toast) rather
+       than the whole app, so 5s inbox polls don't spam screen readers. -->
+  <main class="phone" id="app">
+
+    <!-- 1) HEADER: ASILI// wordmark + seller + trade-lane register -->
     <header class="appbar" id="appbar">
       <div class="appbar__brand">
-        <!-- Inline SVG mark (no external logos / trademarks per competition rules) -->
         <span class="logo" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22" role="img">
-            <!-- Stylized tea leaf in deep violet -->
-            <path d="M12 2C7 5 4 9 4 14c0 4 3 7 8 8 5-1 8-4 8-8 0-5-3-9-8-12z"
-                  fill="currentColor" opacity="0.18"/>
-            <path d="M12 3.2c-3.2 3-5 6.2-5 9.8 0 3 1.7 5.6 5 7.2 0-5.1 1.4-9.4 4.6-13.1C15.3 5.3 13.8 4 12 3.2z"
-                  fill="currentColor"/>
+          <svg viewBox="0 0 24 24" width="20" height="20" role="img">
+            <!-- Origin leaf, drawn as a hairline instrument glyph in phosphor -->
+            <path d="M12 3.4C8.6 6.2 6.7 9.5 6.7 13c0 3 1.8 5.6 5.3 7.2 0-5.1 1.4-9.4 4.7-13.1"
+                  fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M12 20.2C12 14 13.5 9.4 17 5.6" fill="none" stroke="currentColor" stroke-width="0.9" opacity="0.55"/>
           </svg>
         </span>
         <div class="appbar__titles">
-          <span class="wordmark">Asili</span>
+          <span class="wordmark" aria-label="Asili">ASILI<span class="wordmark__slash">//</span></span>
           <span class="appbar__sub" id="sellerLine">
-            <span class="skeleton skeleton--text" style="width:120px"></span>
+            <span class="skeleton skeleton--text skeleton--w120"></span>
           </span>
         </div>
       </div>
       <span class="lane-pill" id="lanePill" title="Trade lane">
-        <span class="skeleton skeleton--text" style="width:54px"></span>
+        <span class="skeleton skeleton--text skeleton--w54"></span>
       </span>
     </header>
 
@@ -48,8 +52,8 @@
       <!-- 1b) INBOX: incoming conversations (Telegram + demo); polled for new ones -->
       <article class="card inbox" id="inboxCard" aria-label="Inbox">
         <div class="panel__head">
-          <h2 class="panel__title">Inbox</h2>
-          <span class="panel__tag" id="inboxTag">live</span>
+          <h2 class="panel__title"><span class="prompt">▸</span> Inbox</h2>
+          <span class="panel__tag panel__tag--live" id="inboxTag">live</span>
         </div>
         <ul class="inbox__list" id="inboxList"></ul>
       </article>
@@ -68,8 +72,8 @@
         <!-- Message bubbles get injected here -->
         <div class="bubbles" id="bubbles">
           <div class="bubble bubble--in skeleton-bubble">
-            <span class="skeleton skeleton--text" style="width:80%"></span>
-            <span class="skeleton skeleton--text" style="width:55%"></span>
+            <span class="skeleton skeleton--text skeleton--w80"></span>
+            <span class="skeleton skeleton--text skeleton--w55"></span>
           </div>
         </div>
 
@@ -83,26 +87,28 @@
       <!-- 3) ACTIVITY RAIL: streamed agent steps (filled after Draft) -->
       <article class="card panel" id="railCard" hidden aria-label="Agent activity">
         <div class="panel__head">
-          <h2 class="panel__title">Agent activity</h2>
+          <h2 class="panel__title"><span class="prompt">▸</span> Agent trace</h2>
           <span class="panel__tag" id="railTag">live trace</span>
         </div>
         <ol class="rail" id="rail"></ol>
       </article>
 
-      <!-- 3b) DRAFT REPLY: grounded facts + source chips + approve/edit/reject -->
-      <article class="card panel" id="draftCard" hidden aria-label="Drafted reply">
+      <!-- 3b) DRAFT REPLY: grounded ledger + the signed receipt + approve/edit/reject -->
+      <article class="card panel draft" id="draftCard" hidden aria-label="Drafted reply">
         <div class="panel__head">
-          <h2 class="panel__title">Asili's draft reply</h2>
+          <h2 class="panel__title"><span class="prompt">▸</span> Grounded reply</h2>
           <span class="panel__tag panel__tag--ok" id="draftStatusTag">pending approval</span>
         </div>
 
-        <!-- Grounded business facts (from facts[]) -->
+        <!-- Grounded business facts, printed as a ledger of line items -->
         <div class="facts" id="facts"></div>
 
-        <!-- The composed reply, shown as an outbound bubble -->
+        <!-- The composed reply, rendered as a tamper-evident receipt -->
         <div class="draft-bubble" id="draftBubble">
+          <span class="receipt__rule" aria-hidden="true">— GROUNDED REPLY ————</span>
           <p class="draft-bubble__body" id="draftBody"></p>
           <div class="sources" id="draftSources"></div>
+          <div class="draft-stamp" id="draftStamp" hidden aria-hidden="true"></div>
         </div>
 
         <!-- Inline editor (hidden until "Edit") -->
@@ -123,27 +129,28 @@
           <button class="btn btn--ghost" id="cancelEditBtn">Cancel</button>
         </div>
 
-        <!-- Result toast after an action -->
-        <div class="result" id="approveResult" hidden></div>
+        <!-- Result toast after an action (scoped live region) -->
+        <div class="result" id="approveResult" hidden role="status" aria-live="polite"></div>
       </article>
 
-      <!-- 4) BASELINE: "What a plain chatbot would send" -->
-      <article class="card panel panel--muted" id="baselineCard" hidden aria-label="Plain chatbot comparison">
+      <!-- 4) BASELINE: "What a plain chatbot would send" — the forged carbon copy -->
+      <article class="card panel panel--muted baseline" id="baselineCard" hidden aria-label="Plain chatbot comparison">
         <div class="panel__head">
-          <h2 class="panel__title">What a plain chatbot would send</h2>
-          <span class="panel__tag panel__tag--bad">no tools · ungrounded</span>
+          <h2 class="panel__title"><span class="prompt">▸</span> Ungrounded chatbot</h2>
+          <span class="panel__tag panel__tag--bad">no tools · unverified</span>
         </div>
         <div class="baseline-bubble" id="baselineBubble">
+          <span class="receipt__rule receipt__rule--bad" aria-hidden="true">— CARBON COPY · UNSIGNED —</span>
           <p class="baseline-bubble__body" id="baselineBody"></p>
           <div class="warnings" id="baselineWarnings"></div>
         </div>
-        <p class="panel__foot">Single model, no catalog access. It guesses — and the guesses are wrong.</p>
+        <p class="panel__foot">Single model, no catalog read. Its numbers are guesses — so they're redacted.</p>
       </article>
 
       <!-- 5) TRUST SCORECARD: team vs baseline metrics (/api/eval) -->
       <article class="card panel" id="scoreCard" aria-label="Trust scorecard">
         <div class="panel__head">
-          <h2 class="panel__title">Trust Scorecard</h2>
+          <h2 class="panel__title"><span class="prompt">▸</span> Trust Scorecard</h2>
           <span class="panel__tag" id="scoreTag">adversarial eval</span>
         </div>
         <p class="panel__intro">
@@ -153,8 +160,6 @@
         <button class="btn btn--secondary btn--block" id="evalBtn">Run Trust Scorecard</button>
         <!-- Scoreboard injected here -->
         <div class="scoreboard" id="scoreboard" hidden></div>
-        <!-- Per-scenario detail -->
-        <div class="scenarios" id="scenarios" hidden></div>
       </article>
 
       <footer class="appfoot">
