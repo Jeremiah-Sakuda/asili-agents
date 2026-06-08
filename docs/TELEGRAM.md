@@ -106,9 +106,10 @@ via `httpx`):
 
 - The webhook secret keeps third parties from posting fake updates; always set it in production.
 - Replies use Markdown `parse_mode`; keep drafts within Telegram's 4096‑char limit.
-- Inbound state is in‑memory (`tg:<chat_id>` conversations), consistent with the
-  rest of the service; persisting Telegram conversations to MongoDB is a natural
-  next step.
+- Inbound conversations (`tg:<chat_id>`) and their pending drafts persist to
+  MongoDB Atlas via `data/store.py` (`MongoStore`) when Atlas is connected — so a
+  Telegram draft created on one Cloud Run instance can be approved on another and
+  survives restarts; an in‑memory store is the local/test fallback.
 - The agent run happens inline in the webhook (~15–20s with live MCP grounding),
   well within Telegram's webhook timeout; for very high volume, move it to a
   background task and return `200` immediately.
