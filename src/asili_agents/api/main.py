@@ -7,14 +7,17 @@ This API provides:
 4. Demo runner
 """
 
+import asyncio
+import hmac
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections import OrderedDict
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -46,12 +49,14 @@ from asili_agents.runner import (
 )
 from asili_agents.tools.catalog import check_stock, get_costs, set_product_store
 from asili_agents.tools.channel import ApprovalResult, ApprovalStatus, set_approval_callback
-from asili_agents.tools.logging import clear_decision_log, get_decision_log
+from asili_agents.tools.logging import clear_decision_log
 from asili_agents.tools.pricing import compute_bundle_price, set_pricing_context
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 logger = logging.getLogger("asili.api")
+
+T = TypeVar("T")
 
 # Application state
 _state: dict[str, Any] = {}
@@ -59,9 +64,18 @@ _state: dict[str, Any] = {}
 # Inbound payload + abuse guards. The service is deployed --allow-unauthenticated
 # and some endpoints issue billable Gemini calls, so cap body size and rate-limit
 # the expensive/agent endpoints (best-effort, per-process sliding window).
+MAX_BODY_BYTES = 64 * 1024  # global cap for any JSON request body
 MAX_WEBHOOK_BYTES = 64 * 1024
 MAX_INBOUND_CHARS = 2000
+# Bound the rate-limiter memory: keys (client IPs) are evicted once stale, and the
+# whole table is capped so a flood of distinct source IPs can't grow it unbounded.
+MAX_RATE_KEYS = 10_000
+# Telegram redelivers an Update on any non-2xx/timeout. Remembering recent
+# update_ids makes the webhook idempotent so a redelivery can't trigger a second
+# billable agent run or a duplicate inbound message.
+SEEN_UPDATE_CAP = 4096
 _rate_state: dict[str, list[float]] = {}
+_seen_update_ids: OrderedDict[int, None] = OrderedDict()
 
 
 def _rate_limited(key: str, max_calls: int, window_s: float) -> bool:
@@ -73,11 +87,57 @@ def _rate_limited(key: str, max_calls: int, window_s: float) -> bool:
         return True
     recent.append(now)
     _rate_state[key] = recent
+    # Opportunistic eviction so the table can't grow without bound: drop any key
+    # whose window has fully elapsed, then hard-cap the total key count.
+    if len(_rate_state) > MAX_RATE_KEYS:
+        stale = [k for k, ts in _rate_state.items() if not ts or now - ts[-1] >= window_s]
+        for k in stale:
+            _rate_state.pop(k, None)
+        while len(_rate_state) > MAX_RATE_KEYS:
+            _rate_state.pop(next(iter(_rate_state)), None)
+    return False
+
+
+def _seen_update(update_id: int | None) -> bool:
+    """Return True if this Telegram update_id was already processed (idempotency)."""
+    if update_id is None:
+        return False
+    if update_id in _seen_update_ids:
+        return True
+    _seen_update_ids[update_id] = None
+    while len(_seen_update_ids) > SEEN_UPDATE_CAP:
+        _seen_update_ids.popitem(last=False)
     return False
 
 
 def _client_key(request: Request) -> str:
+    """Best-effort client identity for rate limiting.
+
+    Behind Cloud Run, ``request.client.host`` is the front-end proxy, so all
+    callers collapse into one bucket. Prefer the left-most X-Forwarded-For hop
+    (the original client) when present.
+    """
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        first = xff.split(",")[0].strip()
+        if first:
+            return first
     return request.client.host if request.client else "unknown"
+
+
+async def _run_with_timeout(coro: Awaitable[T], *, what: str) -> T:
+    """Run an agent/Gemini/MCP coroutine under a hard timeout.
+
+    Without this a single pathological run (huge prompt, model stall, MCP hang)
+    can pin a request slot + the Node MCP subprocess for the entire Cloud Run
+    request window. On timeout we surface a clean 504 and let the task cancel.
+    """
+    timeout_s = float(get_settings().agent_run_timeout_s)
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout_s)
+    except TimeoutError as exc:
+        logger.warning("%s exceeded %.0fs timeout — cancelled", what, timeout_s)
+        raise HTTPException(status_code=504, detail=f"{what} timed out") from exc
 
 
 def _store() -> ConversationStore:
@@ -95,6 +155,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     reach Atlas falls back to the demo seed so the service always boots.
     """
     settings = get_settings()
+
+    # Configure logging once, at startup. Without this nothing ever calls
+    # basicConfig/dictConfig, so the root logger stays at WARNING and every
+    # deliberate INFO diagnostic — including the "Atlas FAILED, serving DEMO"
+    # alarm and the missing-webhook-secret warning — is silently dropped in
+    # Cloud Logging exactly when the service degrades. force=True so we win over
+    # any handler uvicorn may have installed on the root logger.
+    logging.basicConfig(
+        level=settings.log_level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
+
     seller, demo_products, demo_policy = get_demo_seller()
     products, policy = demo_products, demo_policy
     repository = None
@@ -167,7 +240,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _state["conversations"] = {}
     _state["pending_drafts"] = {}  # conversation_id -> draft info
     _state["runners"] = {}  # conversation_id -> runner
+    _state["last_decisions"] = []
     _rate_state.clear()
+    _seen_update_ids.clear()
 
     # Durable store: MongoDB when Atlas is connected (survives restarts + shared
     # across instances), else in-memory wrapping the dicts above (local/tests).
@@ -201,6 +276,43 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Content Security Policy for the same-origin web UI. The /app inbox renders
+# attacker-controlled Telegram names/bodies through innerHTML sinks guarded by a
+# hand-rolled escaper; a strict CSP is the backstop if one escape is ever missed.
+# Everything the UI loads is same-origin static, so 'self' is sufficient — no CDNs.
+_CSP = (
+    "default-src 'none'; "
+    "script-src 'self'; "
+    "style-src 'self'; "
+    "img-src 'self' data:; "
+    "font-src 'self'; "
+    "connect-src 'self'; "
+    "base-uri 'none'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
+_SECURITY_HEADERS = {
+    "Content-Security-Policy": _CSP,
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+}
+
+
+@app.middleware("http")
+async def security_and_size_guard(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Reject oversized bodies up front and stamp security headers on every reply."""
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+        return Response(status_code=413, content="payload too large")
+    response = await call_next(request)
+    for header, value in _SECURITY_HEADERS.items():
+        response.headers.setdefault(header, value)
+    return response
+
 
 # CORS for frontend
 app.add_middleware(
@@ -306,8 +418,10 @@ class AgentStepResponse(BaseModel):
 class RunAgentsRequest(BaseModel):
     """Request to run agents on a conversation."""
 
-    conversation_id: str
-    message: str | None = None
+    conversation_id: str = Field(..., max_length=256)
+    # Cap caller-supplied prompts: these drive billable Gemini calls, so an
+    # unbounded message is a direct cost-amplification lever.
+    message: str | None = Field(default=None, max_length=MAX_INBOUND_CHARS)
 
 
 class RunAgentsResponse(BaseModel):
@@ -480,20 +594,15 @@ async def get_conversation(conversation_id: str) -> ConversationResponse:
 
 @app.get("/api/decisions", response_model=list[AgentStepResponse])
 async def get_decisions() -> list[AgentStepResponse]:
-    """Get all logged agent decisions."""
-    decisions = get_decision_log()
-    return [
-        AgentStepResponse(
-            id=str(d.id),
-            agent_name=d.agent_name,
-            agent_role=d.agent_role,
-            step_type=d.step_type,
-            reasoning_trace=d.reasoning_trace,
-            grounded_facts=d.grounded_facts,
-            timestamp=d.timestamp.isoformat(),
-        )
-        for d in decisions
-    ]
+    """Get the agent decision steps from the most recent run.
+
+    The per-run decision log is a ContextVar scoped to the agent's task, so it is
+    empty in this handler's request context. The run endpoints instead snapshot
+    each run's steps into ``_state['last_decisions']`` so this endpoint reflects
+    the latest run rather than always returning an empty list.
+    """
+    steps: list[AgentStepResponse] = _state.get("last_decisions", [])
+    return steps
 
 
 @app.get("/api/inbox")
@@ -526,9 +635,25 @@ async def get_inbox() -> list[dict[str, Any]]:
 
 @app.post("/api/reset")
 async def reset_demo() -> dict[str, str]:
-    """Reset the demo state."""
+    """Reset the in-memory demo state.
+
+    SECURITY: this endpoint is unauthenticated. It must NEVER destroy durable
+    data. When backed by Atlas, ``store.clear()`` would run ``delete_many({})``
+    against the real ``conversations``/``drafts`` collections — an anonymous,
+    irrecoverable wipe of every conversation and every pending seller-approval
+    draft across all instances. So on the Atlas path we refuse to clear the store
+    and only re-seed the in-memory demo catalog. The in-memory store (local/tests)
+    is safe to clear because it holds nothing durable.
+    """
     clear_decision_log()
-    _store().clear()
+    _state["last_decisions"] = []
+    data_source = _state.get("data_source", "demo")
+    cleared = False
+    if data_source != "atlas":
+        _store().clear()
+        cleared = True
+    else:
+        logger.info("/api/reset called on Atlas-backed store — refusing to clear durable data.")
     _state["runners"] = {}
 
     # Reinitialize with fresh demo data
@@ -539,7 +664,7 @@ async def reset_demo() -> dict[str, str]:
     set_product_store(products)
     set_pricing_context(products, policy)
 
-    return {"status": "reset"}
+    return {"status": "reset" if cleared else "reset-demo-only"}
 
 
 @app.post("/api/run", response_model=RunAgentsResponse)
@@ -589,8 +714,7 @@ async def run_agents(request: RunAgentsRequest, http_request: Request) -> RunAge
         repository=_state.get("repository"),
         use_mcp=_state.get("use_mcp"),
     )
-    _state["runners"][request.conversation_id] = runner
-    result = await run_agent_async(runner, customer_message)
+    result = await _run_with_timeout(run_agent_async(runner, customer_message), what="agent run")
 
     if not result.success:
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {result.error}")
@@ -620,6 +744,9 @@ async def run_agents(request: RunAgentsRequest, http_request: Request) -> RunAge
         )
         for step in result.steps
     ]
+    # Snapshot the latest run's steps so GET /api/decisions reflects it (the
+    # ContextVar decision log is empty outside the agent's own task context).
+    _state["last_decisions"] = steps
 
     # Get grounded facts for UI display
     facts = _get_grounded_facts_for_response(products, policy)
@@ -641,12 +768,16 @@ async def run_agents(request: RunAgentsRequest, http_request: Request) -> RunAge
 
 
 @app.post("/api/run/baseline")
-async def run_baseline_agent(request: RunAgentsRequest) -> dict[str, Any]:
+async def run_baseline_agent(request: RunAgentsRequest, http_request: Request) -> dict[str, Any]:
     """Run the baseline (single-model) agent for comparison.
 
     This endpoint executes the baseline agent which has no tools,
     demonstrating the failure modes of a naive LLM approach.
     """
+    # Billable Gemini call — rate-limit it the same as /api/run.
+    if _rate_limited(f"baseline:{_client_key(http_request)}", max_calls=30, window_s=60.0):
+        raise HTTPException(status_code=429, detail="rate limited")
+
     seller = _state.get("seller")
     products = _state.get("products", [])
 
@@ -675,7 +806,9 @@ async def run_baseline_agent(request: RunAgentsRequest) -> dict[str, Any]:
 
     # Create and run the baseline agent (async, on this event loop)
     baseline_runner = create_baseline_runner(seller, products)
-    response_text, raw_events = await run_baseline_async(baseline_runner, customer_message)
+    response_text, raw_events = await _run_with_timeout(
+        run_baseline_async(baseline_runner, customer_message), what="baseline run"
+    )
 
     return {
         "response": response_text,
@@ -753,14 +886,24 @@ async def approve_draft(request: ApprovalRequest) -> ApprovalResponse:
 
 @app.get("/api/pending/{conversation_id}")
 async def get_pending_draft(conversation_id: str) -> dict[str, Any]:
-    """Get the pending draft for a conversation, if any."""
+    """Get the pending draft for a conversation, if any.
+
+    Returns only the fields the UI needs. The stored draft also holds the
+    customer's Telegram ``chat_id`` (the delivery address); that is never exposed
+    over the API — it stays server-side and is used only on approval.
+    """
     pending = _store().get_pending(conversation_id)
     if not pending:
         return {"has_pending": False}
 
     return {
         "has_pending": True,
-        "draft": pending,
+        "draft": {
+            "body": pending.get("body", ""),
+            "sources": pending.get("sources", []),
+            "status": pending.get("status", "pending"),
+            "channel": pending.get("channel"),
+        },
     }
 
 
@@ -772,24 +915,43 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
     the seller approves (POST /api/approve), at which point it is delivered back
     to the customer's Telegram chat. This preserves the human-approval gate.
     """
-    # Reject oversized bodies before reading them.
-    content_length = request.headers.get("content-length")
-    if content_length and content_length.isdigit() and int(content_length) > MAX_WEBHOOK_BYTES:
+    # Read the body once and enforce the size cap on the ACTUAL bytes. Relying on
+    # the Content-Length header alone is bypassable (chunked Transfer-Encoding, or
+    # a missing/spoofed header), which would let an arbitrarily large body be
+    # buffered + parsed into memory.
+    raw = await request.body()
+    if len(raw) > MAX_WEBHOOK_BYTES:
         raise HTTPException(status_code=413, detail="payload too large")
 
-    # Verify the secret token. Fail closed: if the channel is enabled but no
-    # secret is configured, reject rather than accept anonymous posts.
+    # Verify the secret token. FAIL CLOSED: a configured secret is REQUIRED to do
+    # any (billable) work. If no secret is configured the webhook is rejected
+    # outright — otherwise, as deployed without a bot token, the route would be
+    # anonymous and fire full Gemini runs for any internet caller. Compare in
+    # constant time to avoid a timing side-channel on the secret.
     secret = _state.get("telegram_secret")
-    if secret:
-        if request.headers.get(SECRET_HEADER) != secret:
-            raise HTTPException(status_code=401, detail="invalid Telegram secret token")
-    elif _state.get("channel_enabled"):
+    if not secret:
         raise HTTPException(status_code=401, detail="webhook secret not configured")
+    provided = request.headers.get(SECRET_HEADER) or ""
+    if not hmac.compare_digest(provided, secret):
+        raise HTTPException(status_code=401, detail="invalid Telegram secret token")
 
     if _rate_limited(f"tg:{_client_key(request)}", max_calls=60, window_s=60.0):
         raise HTTPException(status_code=429, detail="rate limited")
 
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid update payload")
+
+    # Idempotency: Telegram redelivers an Update on any non-2xx/timeout. Skip one
+    # we have already processed so a redelivery can't trigger a second billable
+    # run or a duplicate inbound message.
+    update_id = payload.get("update_id")
+    if isinstance(update_id, int) and _seen_update(update_id):
+        return {"ok": True, "skipped": True, "duplicate": True}
+
     inbound = parse_update(payload)
     if inbound is None or not inbound.text.strip():
         return {"ok": True, "skipped": True}
@@ -836,7 +998,11 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
             repository=_state.get("repository"),
             use_mcp=_state.get("use_mcp"),
         )
-        result = await run_agent_async(runner, inbound.text)
+        result = await _run_with_timeout(
+            run_agent_async(runner, inbound.text), what="telegram agent run"
+        )
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Agent run failed for Telegram chat %s", inbound.chat_id)
         return {"ok": True, "pending": False, "error": "agent_run_failed"}

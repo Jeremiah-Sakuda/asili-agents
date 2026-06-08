@@ -16,7 +16,7 @@ from asili_agents.config import get_settings
 from asili_agents.tools.catalog import catalog_search, check_stock
 from asili_agents.tools.logging import log_decision
 
-MESSAGING_INSTRUCTION = """You are the Messaging Agent for {seller_name}, a specialty tea seller.
+MESSAGING_INSTRUCTION = """You are the Messaging Agent for {seller_name}, a {seller_category} seller.
 
 Your role is to handle customer conversations, ensuring every response is grounded in real catalog data.
 
@@ -59,8 +59,9 @@ Remember: Your responses will be reviewed by the seller before sending. Accuracy
 
 def create_messaging_agent(
     seller_name: str = "Mahaba Tea Co.",
-    brand_voice: str = "warm and knowledgeable about tea",
+    brand_voice: str = "warm and knowledgeable",
     use_mcp: bool | None = None,
+    seller_category: str = "specialty goods",
 ) -> LlmAgent:
     """Create the Messaging Agent.
 
@@ -79,6 +80,7 @@ def create_messaging_agent(
     instruction = MESSAGING_INSTRUCTION.format(
         seller_name=seller_name,
         brand_voice=brand_voice,
+        seller_category=seller_category,
     )
     tools: list = [catalog_search, check_stock, log_decision]
 

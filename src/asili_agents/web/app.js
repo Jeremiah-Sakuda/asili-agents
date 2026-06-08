@@ -47,10 +47,14 @@ function el(tag, className, html) {
   return n;
 }
 function escapeHtml(s) {
+  // Escape quotes too: several call sites interpolate into HTML that includes
+  // quoted attributes, so unescaped " or ' would allow attribute breakout.
   return String(s ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 const isInbound = (d) => d === "in" || d === "inbound";
 
@@ -334,15 +338,20 @@ function renderBaseline(baseline) {
   }
   const text = baseline.response || "(no response)";
   $("baselineBody").textContent = text;
+  // Show STRUCTURAL facts the server asserts about the baseline (grounded /
+  // has_tools) — not a client-side re-scoring of this reply's text. Quantified
+  // honesty scoring is the Trust Scorecard's job (server-side eval/scoring.py),
+  // so the UI never second-guesses a specific reply and can never disagree with
+  // the authoritative scorer.
   const warns = $("baselineWarnings");
   warns.innerHTML = "";
-  if (/\b\d{1,4}\s*(tins?|units?|in stock|available)/i.test(text) || /in stock/i.test(text)) {
-    warns.appendChild(el("span", "warn", "hallucinated stock"));
+  if (baseline.grounded === false) {
+    warns.appendChild(el("span", "warn", "no live catalog read · stock unverified"));
   }
-  if (/\b\d{1,2}\s*%\s*(off|discount)/i.test(text) || /\$\d/.test(text)) {
-    warns.appendChild(el("span", "warn", "unverified price · possible margin breach"));
+  if (baseline.has_tools === false) {
+    warns.appendChild(el("span", "warn", "no deterministic pricing · margin unverified"));
   }
-  warns.appendChild(el("span", "warn warn--soft", "no catalog access"));
+  warns.appendChild(el("span", "warn warn--soft", "answers from a static snapshot"));
 }
 
 // ---------------------------------------------------------------------------

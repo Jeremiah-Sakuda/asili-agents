@@ -74,10 +74,23 @@ class TestWebhook:
         )
         assert r.status_code == 401
 
-    def test_non_text_update_skipped(self, client):
-        r = client.post("/api/telegram/webhook", json={"update_id": 1})
+    def test_non_text_update_skipped(self, client, monkeypatch):
+        monkeypatch.setitem(main_module._state, "telegram_secret", "topsecret")
+        r = client.post(
+            "/api/telegram/webhook",
+            json={"update_id": 1},
+            headers={"X-Telegram-Bot-Api-Secret-Token": "topsecret"},
+        )
         assert r.status_code == 200
         assert r.json()["skipped"] is True
+
+    def test_missing_secret_fails_closed(self, client, monkeypatch):
+        # No secret configured at all -> the webhook must reject, never run.
+        monkeypatch.setitem(main_module._state, "telegram_secret", None)
+        r = client.post(
+            "/api/telegram/webhook", json={"message": {"chat": {"id": 1}, "text": "hi"}}
+        )
+        assert r.status_code == 401
 
     def test_creates_pending_draft_without_sending(self, client, monkeypatch):
         async def fake_run(runner, message, **kwargs):
@@ -90,20 +103,23 @@ class TestWebhook:
                 success=True,
             )
 
+        monkeypatch.setitem(main_module._state, "telegram_secret", "topsecret")
         monkeypatch.setattr(main_module, "create_runner", lambda *a, **k: object())
         monkeypatch.setattr(main_module, "run_agent_async", fake_run)
         fake_tg = FakeTelegram()
         monkeypatch.setitem(main_module._state, "telegram", fake_tg)
 
         payload = {
+            "update_id": 4242,
             "message": {
                 "message_id": 1,
                 "from": {"first_name": "Dana"},
                 "chat": {"id": 555},
                 "text": "Is purple tea in stock?",
-            }
+            },
         }
-        r = client.post("/api/telegram/webhook", json=payload)
+        headers = {"X-Telegram-Bot-Api-Secret-Token": "topsecret"}
+        r = client.post("/api/telegram/webhook", json=payload, headers=headers)
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["pending"] is True
@@ -122,6 +138,13 @@ class TestWebhook:
         conv = main_module._state["conversations"]["tg:555"]
         assert len(conv.messages) == 1
         assert conv.messages[0].direction.value == "in"
+
+        # Idempotency: redelivering the SAME update_id is skipped — no duplicate
+        # inbound message and no second billable run.
+        r2 = client.post("/api/telegram/webhook", json=payload, headers=headers)
+        assert r2.status_code == 200
+        assert r2.json().get("duplicate") is True
+        assert len(main_module._state["conversations"]["tg:555"].messages) == 1
 
 
 class TestApproveDelivers:

@@ -54,7 +54,13 @@ class MongoCatalogRepository:
     ) -> None:
         from pymongo import MongoClient
 
-        self._client: MongoClient[dict[str, Any]] = MongoClient(uri)
+        # Bounded timeouts so an unreachable Atlas fails fast (~5s) at startup
+        # rather than stalling the PyMongo default of 30s inside a request.
+        self._client: MongoClient[dict[str, Any]] = MongoClient(
+            uri,
+            serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=5000,
+        )
         self._db = self._client[database]
         self._products: Collection[dict[str, Any]] = self._db[products_collection]
         self._policy_col: Collection[dict[str, Any]] = self._db[policy_collection]

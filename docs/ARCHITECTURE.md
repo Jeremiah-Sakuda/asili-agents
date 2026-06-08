@@ -1,7 +1,7 @@
 # Asili Operations Team — Architecture
 
 > **The one-line thesis:** *Asili is the AI operations team that can prove it never lied.*
-> Every customer-facing answer is grounded in the seller's **live MongoDB Atlas catalog** (read through the MongoDB MCP server in `--readOnly` mode), every price comes from a **deterministic Decimal margin engine** (never the LLM), and **nothing sends without the seller's one-tap approval**. A **Trust Scorecard** runs adversarial scenarios through the multi-agent team and a deliberately-naive single-agent baseline, and scores hallucination, margin-safety, and groundedness.
+> Every customer-facing answer is grounded in the seller's **live MongoDB Atlas catalog** (read through the MongoDB MCP server in `--readOnly` mode), every price comes from a **deterministic Decimal margin engine** (never the LLM), and **nothing sends without the seller's one-tap approval**. A **Trust Scorecard** runs adversarial scenarios through the multi-agent team and a **fair single-agent baseline** (the full catalog in its prompt, minus the live grounding and the deterministic pricing engine), and scores hallucination, margin-safety, and groundedness.
 
 This document describes the runtime honestly: the diagram below is the architecture the system runs, and the [Implementation status](#implementation-status-honest-runtime-notes) section spells out exactly what is wired today versus the one remaining increment (persisting trust artifacts back to Atlas).
 
@@ -86,7 +86,7 @@ flowchart TB
     class READDB,WRITEDB db;
 ```
 
-**How to read the diagram, in one breath:** the seller's phone talks to one Cloud Run container. Inside it, the **Operations Manager** routes the customer's question to the **Messaging** and **Pricing** specialists. Messaging and Pricing read catalog facts through an **MCPToolset → MongoDB MCP server (`--readOnly`) → Atlas**, so they cannot invent inventory. Pricing never does arithmetic itself — it hands quantities to the **deterministic Decimal engine** (the violet, non-LLM box), which enforces the 45% margin floor. The composed reply stops at the **red approval gate**: nothing reaches a customer channel until the seller taps Approve. Every approved draft, decision, and eval run is written back to Atlas on the **audited write path**. The **Baseline agent** (dashed, grey) is a deliberately crippled single agent with no tools — it's the control the Trust Scorecard measures against.
+**How to read the diagram, in one breath:** the seller's phone talks to one Cloud Run container. Inside it, the **Operations Manager** routes the customer's question to the **Messaging** and **Pricing** specialists. Messaging and Pricing read catalog facts through an **MCPToolset → MongoDB MCP server (`--readOnly`) → Atlas**, so they cannot invent inventory. Pricing never does arithmetic itself — it hands quantities to the **deterministic Decimal engine** (the violet, non-LLM box), which enforces the 45% margin floor. The composed reply stops at the **red approval gate**: nothing reaches a customer channel until the seller taps Approve. Conversations and their pending/approved drafts are written back to Atlas on the **audited write path** (the decision log and eval runs are in-process for now — see implementation status). The **Baseline agent** (dashed, grey) is a *fair* single-agent control: it gets the same catalog snapshot — stock, cost, and the 45% rule — in its prompt, but has no live grounding and no deterministic pricing tool, so the Trust Scorecard delta measures **architecture**, not an information gap.
 
 ---
 
@@ -135,10 +135,10 @@ Grounding reads flow through an MCPToolset to the `mongodb-mcp-server` (launched
 `send_for_approval` (`tools/channel.py`) is the only path toward a customer, and it does **not** send — it parks the draft as `PENDING` and returns. The actual decision happens out-of-band when the seller hits `POST /api/approve` with `approve`, `edit`, or `reject`. Only on approve/edit does the message get appended to the conversation as `OUTBOUND`/`SENT`. There is no code path from an agent to a live channel that bypasses this gate — that's why it's drawn as a wall, not an arrow.
 
 ### Audited app write path → Atlas
-Writes are a separate, narrow channel from reads. The application — not the read-only MCP path — performs audited writes of **drafts**, **decisions** (the agent reasoning trace from `log_decision`), and **eval_runs** (Trust Scorecard results) to Atlas. Keeping writes out of the MCP grounding path is deliberate: the thing the agents read from can never be the thing they write to.
+Writes are a separate, narrow channel from reads. The application — not the read-only MCP path — performs audited writes to Atlas, deliberately kept out of the MCP grounding path: the thing the agents read from can never be the thing they write to. **Wired today:** conversations and their pending/approved **drafts** persist through `data/store.py` `MongoStore`. **Still in-process (the remaining increment):** the agent **decision** trace from `log_decision` and the **eval_runs** Trust Scorecard history — these are returned in API responses but not yet persisted back to Atlas.
 
-### Baseline Agent — the no-tools control
-`agents/baseline.py` is a single Gemini `LlmAgent` with `tools=[]` and the catalog stuffed into its prompt as plain text. It is **designed to fail**: no `check_stock` (so it hallucinates inventory), no `compute_bundle_price` (so it free-hands discounts below margin), no `catalog_search` (so it invents details). It exists purely as the control the Trust Scorecard scores the real team against — it is never on the customer path.
+### Baseline Agent — the fair single-agent control
+`agents/baseline.py` is a single Gemini `LlmAgent` with `tools=[]` that receives the **full catalog snapshot in its prompt** — names, prices, costs, stock, and the 45% margin rule — and is given a careful, well-engineered instruction to answer accurately (use exact stock, do the margin math, decline floor-breaching discounts). It is **not** starved of data or deliberately weakened. What it lacks is the team's *structural* advantages: live read-only grounding (so it recalls stock from a static snapshot instead of reading it) and the deterministic `compute_bundle_price` engine (so it does margin math in its head). It still slips in predictable ways — that residual error, against a genuinely fair prompt, is exactly what isolates the value of the architecture. It is never on the customer path.
 
 ---
 
@@ -176,7 +176,7 @@ The Trust Scorecard turns the trust claim into a number. It runs a battery of **
 - **`margin_safe_rate`** — share of quoted prices at or above the 45% floor (deterministically checkable against `compute_bundle_price`).
 - **`grounded_rate`** — share of factual claims traceable to a catalog read.
 
-It returns `{ team: { …, scenarios:[{id, prompt, passed, issues}] }, baseline: { … }, summary }`, and the run is persisted to `eval_runs` in Atlas via the audited write path. The expected story: the **team scores near-perfect** on all three because grounding and the margin engine are structural; the **baseline fails predictably** because it's a single model guessing from a prompt. The delta is the value proof.
+It returns `{ team: { …, scenarios:[{id, prompt, passed, issues}] }, baseline: { … }, summary }` in the API response (persisting the run to `eval_runs` in Atlas is the remaining write-path increment). The expected story: the **team scores near-perfect** on all three because grounding and the margin engine are structural; the **fair baseline still slips** — even with the full catalog and the 45% rule in its prompt and a careful instruction, a single model recalls stock imperfectly and does margin math in its head. The delta is the value proof, and because the baseline is genuinely fair it isolates the team's *architecture* (live grounding + the deterministic engine), not a data advantage.
 
 ---
 

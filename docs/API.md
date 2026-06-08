@@ -50,15 +50,19 @@ All other endpoints are pure in-process reads/writes of application state (no LL
 
 - **In-process demo seed** (`data_source: "demo"`, `mcp_grounding: false`) is the LOCAL/TEST default. The seed is **Mahaba Tea Co.** ([`data/seed.py`](../src/asili_agents/data/seed.py)).
 - **MongoDB Atlas + MongoDB MCP** (`data_source: "atlas"`, `mcp_grounding: true`) is the DEPLOYED grounding path. On startup the app uses Atlas **only when `MONGODB_URI` is set AND `DEMO_MODE` is false**; MCP grounding is then on only if `USE_MCP=true`. If Atlas can't be reached, the app logs loudly and **falls back to the demo seed** so it always boots.
-- Persisting drafts / decisions / eval runs **back** to Atlas (the write path) is **staged / not yet wired**. Decision logging is in-process only (a process-global log surfaced by `GET /api/decisions`).
+- **Conversations and pending drafts ARE persisted back to Atlas** (via [`data/store.py`](../src/asili_agents/data/store.py) `MongoStore`) when Atlas is connected — durable across restarts and across multiple Cloud Run instances. Still **in-process**: the agent **decision log** (a per-run, context-isolated list surfaced by `GET /api/decisions`) and the `eval_runs` history; persisting those back to Atlas is the remaining increment.
 
 ### Concurrency
 
-The decision log and tool repository are process-global, so `POST /api/run` and `POST /api/eval` are serialized behind a single `asyncio.Lock` (`_run_lock`). Only one agent run executes at a time (a deliberate demo-scale tradeoff).
+The decision log is isolated **per run** via a `ContextVar` (each request is its own asyncio task with its own context), so concurrent `POST /api/run` / `POST /api/eval` calls don't interleave each other's steps — and the API runs **without** a process-wide lock. (The in-process rate limiter and routing caches are per-instance; see the rate-limiting note below.)
 
 ### Application state lifecycle
 
-State (`seller`, `products`, `policy`, `conversations`, `pending_drafts`, `runners`, `data_source`, `use_mcp`) is initialized in the FastAPI `lifespan` startup hook and **cleared on shutdown**. It lives entirely in memory — restarting the process resets all conversations, pending drafts, and the decision log.
+Demo data (`seller`, `products`, `policy`) plus the `runners` / routing caches and `data_source` / `use_mcp` flags are initialized in the FastAPI `lifespan` startup hook. **Conversations and pending drafts are persisted to MongoDB Atlas** when Atlas is connected (via `MongoStore`), so they survive a restart and are shared across Cloud Run instances; on the in-memory fallback (local dev / tests) they reset on restart. The **decision log** and `eval_runs` history are in-process and reset on restart.
+
+### Rate limiting
+
+The billable LLM endpoints are rate-limited per client (keyed by `X-Forwarded-For` / client IP): `POST /api/run` and `POST /api/run/baseline` at 30/min, `POST /api/eval` at 4/min, and the Telegram webhook at 60/min. Over-limit calls receive `429`. **Caveat, stated honestly:** the limiter counter (`_rate_state`) lives in each instance's memory, so with _N_ Cloud Run instances the effective cap is roughly _N_× per client. It is a demo-scale abuse guard, not a distributed quota — a shared store (Redis or a Mongo TTL collection) would make it global. Draft/conversation durability is unaffected, as that already goes through Atlas.
 
 ---
 
@@ -446,7 +450,7 @@ curl -s -X POST http://localhost:8080/api/reset
 
 Run the multi-agent system (Operations Manager → Messaging + Pricing sub-agents, with tools) on a customer message. Returns the agent trace steps, grounded fact cards, and the composed draft reply. The draft is stored as **pending** (keyed by `conversation_id`) for later approval via `POST /api/approve`.
 
-Execution is serialized behind `_run_lock` and runs on the request's event loop via the async runner (`run_agent_async`), so the MongoDB MCP server's stdio session shares that loop.
+Execution runs on the request's event loop via the async runner (`run_agent_async`), so the MongoDB MCP server's stdio session shares that loop. The per-run decision log is isolated with a `ContextVar`, so concurrent runs don't interleave their steps **without** a process-wide lock. (The catalog/pricing repository and the approval callback remain module-global — a deliberate single-tenant, demo-scale simplification.)
 
 **Errors:**
 - `500` if demo data (seller/policy) is not initialized.
@@ -519,7 +523,7 @@ curl -s -X POST http://localhost:8080/api/run \
 
 ## `POST /api/run/baseline`  — issues real Gemini calls
 
-Run the **baseline** single-model agent (no tools — it only has a catalog dump in its context). This demonstrates the failure modes of a naive LLM. Unlike `/api/run`, this endpoint is **not** behind `_run_lock` and does **not** store a draft for approval.
+Run the **baseline** single-model agent — a *fair* control that gets the full catalog dump (stock, cost, the 45% rule) in its prompt but has no tools, no live grounding, and no deterministic pricing engine. It surfaces the failure modes of a single-agent approach even when fairly prompted. Unlike `/api/run`, this endpoint does **not** store a draft for approval.
 
 **Errors:**
 - `500` if the seller is not initialized.
@@ -668,11 +672,11 @@ When there is nothing pending:
 
 ## `POST /api/eval`  — issues real Gemini calls
 
-Run the **Trust Scorecard**: the multi-agent team vs the naive baseline across adversarial scenarios. Each scenario is run through **both** systems and each reply is scored — deterministically, with plain Python — for hallucinated stock, margin-safe discounting, and groundedness.
+Run the **Trust Scorecard**: the multi-agent team vs the fair single-agent baseline (catalog in its prompt, no live grounding or pricing tool) across adversarial scenarios. Each scenario is run through **both** systems and each reply is scored — deterministically, with plain Python — for hallucinated stock, margin-safe discounting, and groundedness.
 
 > The scorecard is a **deterministic heuristic** that is robust to common paraphrases (spelled-out numbers, "half off", "$8 off", thousands separators, clause-scoped refusals). It is **not** a general-purpose lie detector. The hard structural guarantees in the system are the deterministic Decimal margin engine and read-only MCP grounding — the scorecard measures behavior, it does not enforce it.
 
-Serialized behind `_run_lock` and run on the request's event loop via the async scorecard (`run_scorecard_async`). Issues real Gemini calls for every scenario × 2 systems, so `limit` bounds cost/latency.
+Runs on the request's event loop via the async scorecard (`run_scorecard_async`), with per-run `ContextVar`-isolated decision logs (no process-wide lock). Issues real Gemini calls for every scenario × 2 systems, so `limit` bounds cost/latency.
 
 **Errors:** `500` if demo data (seller/policy) is not initialized.
 

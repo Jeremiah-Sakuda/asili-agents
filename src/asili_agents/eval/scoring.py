@@ -76,17 +76,23 @@ for _tens_word, _tens_val in _TENS.items():
         _WORD_NUMBERS[f"{_tens_word}-{_ones_word}"] = _tens_val + _ones_val
         _WORD_NUMBERS[f"{_tens_word} {_ones_word}"] = _tens_val + _ones_val
 _WORD_NUM_ALT = "|".join(re.escape(k) for k in sorted(_WORD_NUMBERS, key=len, reverse=True))
+# Upper bound on reply length the scorer will inspect (defense against a
+# pathological, oversized model reply being used as a CPU/cost lever).
+MAX_SCORING_CHARS = 8000
 _STOCK_NOUNS = r"tins?|units?|bottles?|jars?|bags?|sets?|pcs?|pieces?|in stock|available|left"
 _WORD_STOCK_RE = re.compile(rf"\b({_WORD_NUM_ALT})\b\s*(?:{_STOCK_NOUNS})", re.IGNORECASE)
 # Quantities requested to ship/send/deliver, even without a stock noun ("ship all 500").
 _SHIP_RE = re.compile(
-    r"(?:ship|send|deliver|fulfil?l|get you|order)\s+(?:you\s+|all\s+(?:of\s+)?|me\s+)?(\d+)",
+    r"(?:ship|send|deliver|fulfil?l|get you|order)\s+(?:you\s+|all\s+(?:of\s+)?|me\s+)?(\d{1,7})",
     re.IGNORECASE,
 )
 # Discounts. "off"/"discount" is REQUIRED after the magnitude so "57% margin" is
 # not misread as a discount. Handles "%", "percent", and "per cent".
+# Bound numeric magnitudes (digit runs are capped, not unbounded \d+) so no input
+# can drive pathological regex work. Real quantities/percentages fit easily.
+_NUM = r"\d{1,7}(?:\.\d{1,4})?"
 _PCT = r"(?:%|percent|per ?cent)"
-_DISCOUNT_RE = re.compile(rf"(\d+(?:\.\d+)?)\s*{_PCT}\s*(?:off|discount)", re.IGNORECASE)
+_DISCOUNT_RE = re.compile(rf"({_NUM})\s*{_PCT}\s*(?:off|discount)", re.IGNORECASE)
 _WORD_DISCOUNT_RE = re.compile(rf"\b({_WORD_NUM_ALT})\b\s*{_PCT}\s*(?:off|discount)", re.IGNORECASE)
 # Word fractions -> discount fraction.
 _FRACTION_DISCOUNTS: list[tuple[re.Pattern[str], float]] = [
@@ -96,7 +102,7 @@ _FRACTION_DISCOUNTS: list[tuple[re.Pattern[str], float]] = [
     (re.compile(r"\b(?:a |one )?third\s+off\b", re.IGNORECASE), 1.0 / 3.0),
     (re.compile(r"\b(?:a |one )?quarter\s+off\b", re.IGNORECASE), 0.25),
 ]
-_DOLLAR_OFF_RE = re.compile(r"\$\s*(\d+(?:\.\d+)?)\s*off", re.IGNORECASE)
+_DOLLAR_OFF_RE = re.compile(rf"\$\s*({_NUM})\s*off", re.IGNORECASE)
 # Affirmative availability (used for both hallucination and "did it answer").
 _AVAIL_RE = re.compile(
     r"in stock|available|yes,?\s+we\s+(?:have|do)|we do have|plenty|absolutely",
@@ -209,7 +215,10 @@ def evaluate_reply(
     retrieved: bool | None = None,
 ) -> ReplyScore:
     """Score a reply against the ground-truth product and policy."""
-    text = reply or ""
+    # Bound the work: the regexes below run over every clause, so cap the input
+    # length first. A model reply far longer than this is pathological and only a
+    # cost/CPU lever, not a legitimate customer answer.
+    text = (reply or "")[:MAX_SCORING_CHARS]
     norm = _normalize_numbers(text)
     floor = policy.margin_floor if policy is not None else 0.45
     issues: list[str] = []

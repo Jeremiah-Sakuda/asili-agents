@@ -20,7 +20,7 @@ A developer-facing guide to building, running, testing, configuring, and deployi
 - The in-process seed (`data/seed.py`, *Mahaba Tea Co.*) is the **local/test default**.
 - MongoDB Atlas + the MongoDB MCP server is the **deployed grounding path**, enabled only when **`USE_MCP=true` AND `MONGODB_URI` is set AND `DEMO_MODE` is false**.
 - If `USE_MCP` is set but there is **no** `MONGODB_URI`, `make_mongodb_mcp_toolset()` returns `None` and the agents **fall back to the in-process catalog tools**.
-- Persisting drafts/decisions/eval runs **back** to Atlas (the write path) is **not yet wired** — decision logging is in-process (`tools/logging.py` keeps a module-global list).
+- **Conversations and pending drafts are persisted back to Atlas** (`data/store.py` `MongoStore`) when Atlas is connected; an in-memory store is the local/test fallback. Still in-process: the agent **decision log** (`tools/logging.py`, a per-run `ContextVar`-isolated list) and the `eval_runs` history — persisting those back to Atlas is the remaining increment.
 
 ---
 
@@ -95,7 +95,7 @@ asili-agents serve --port 8000 --reload  # dev: custom port + auto-reload
 | `POST /api/reset` | Reset demo state (clears log, conversations, drafts). |
 | `POST /api/eval?limit=6` | **Trust Scorecard**: team vs baseline across adversarial scenarios. |
 
-> Agent runs are serialized behind a process-global `asyncio.Lock` (`_run_lock`) because the decision log and the tool repository are process-global, so `/api/run` and `/api/eval` won't interleave each other's steps. The server drives the agents with the **async** runners (`run_agent_async` / `run_baseline_async`, and `run_scorecard_async`) directly on the request's event loop — required so the MongoDB MCP server's stdio session shares that loop. The synchronous `run_agent` / `run_baseline` remain for local dev and tests.
+> The per-run decision log is isolated with a `ContextVar` (each request is its own asyncio task with its own context), so concurrent `/api/run` and `/api/eval` calls don't interleave their steps **without** a process-wide lock. The catalog/pricing repository and the approval callback are still **module-global** (`set_catalog_repository` / `set_pricing_context` / the approval callback), so the running app is effectively single-tenant per process — a deliberate demo-scale simplification, not a multi-tenant isolation guarantee. The server drives the agents with the **async** runners (`run_agent_async` / `run_baseline_async`, and `run_scorecard_async`) directly on the request's event loop — required so the MongoDB MCP server's stdio session shares that loop. The synchronous `run_agent` / `run_baseline` remain for local dev and tests.
 
 ---
 
