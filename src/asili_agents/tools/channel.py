@@ -8,6 +8,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
+from uuid import uuid4
 
 from pydantic import BaseModel
 
@@ -118,7 +119,9 @@ def send_for_approval(
         ... )
         {"status": "approved", "body": "Yes, we have Purple Tea in stock!", ...}
     """
-    draft_id = f"draft_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
+    # Timestamp for human readability + a short random suffix so two drafts
+    # composed in the same second can never collide on the same id.
+    draft_id = f"draft_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}"
 
     if _approval_callback is not None:
         result = _approval_callback(draft_id, draft_body)

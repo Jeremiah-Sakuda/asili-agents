@@ -254,12 +254,17 @@ def compute_bundle_price(
         bundle_price += cent
         iterations += 1
 
-    # Calculate actual metrics
+    # Calculate actual metrics. The safety flag is decided in EXACT Decimal space
+    # against the Decimal floor — never from the float margin below — so the
+    # attesting flag carries the same guarantee as the price itself. (A float
+    # round-trip here could report margin-unsafe at the exact floor boundary even
+    # though the Decimal price is provably safe.) The float casts that follow are
+    # for display/serialization only and never feed the safety decision.
     actual_discount = total_regular - bundle_price
-    actual_discount_percent = float(actual_discount / total_regular) if total_regular else 0
     actual_margin = bundle_price - total_cost
+    is_margin_safe = bool(bundle_price > 0 and (actual_margin / bundle_price) >= floor_dec)
+    actual_discount_percent = float(actual_discount / total_regular) if total_regular else 0
     actual_margin_percent = float(actual_margin / bundle_price) if bundle_price else 0
-    is_margin_safe = actual_margin_percent >= effective_margin_floor
 
     # Generate rationale
     if bundle_price == discounted_price:

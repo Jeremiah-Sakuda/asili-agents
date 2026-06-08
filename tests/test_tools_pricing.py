@@ -158,6 +158,38 @@ class TestMarginFloorNeverLeaks:
         assert r["is_margin_safe"] is True
         assert r["bundle_price"] >= 0.97
 
+    def test_is_margin_safe_decided_in_decimal_not_float(self):
+        """The safety flag must agree with EXACT Decimal margin, not the float
+        margin shown for display. We sweep a range of floor-binding cost/price
+        pairs; whenever the engine emits a price it must report is_margin_safe
+        True, and the exact Decimal margin must truly be at/above the floor — a
+        float-space check could wobble to a false-negative at the boundary."""
+        floor = Decimal("0.45")
+        # cost 0.40 .. 0.55 against a $1.00 list: above 0.55 a 45% floor is
+        # unachievable at/below list price, so the engine correctly refuses
+        # (covered by TestCostExceedsPrice / the unachievable-floor test).
+        for cents in range(40, 56):
+            sid = uuid4()
+            prod = Product(
+                id=uuid4(),
+                seller_id=sid,
+                sku="B",
+                name="Boundary",
+                description="d",
+                price=Decimal("1.00"),
+                cost=Decimal(cents) / Decimal("100"),
+            )
+            set_pricing_context([prod], Policy(seller_id=sid, margin_floor=0.45))
+            r = compute_bundle_price([{"product_id": "B", "quantity": 1}], margin_floor=0.45)
+            assert "error" not in r, f"cost {cents}c unexpectedly refused"
+            # Recompute the margin in exact Decimal from the emitted price.
+            bp = Decimal(str(r["bundle_price"]))
+            exact_margin = (bp - (Decimal(cents) / Decimal("100"))) / bp
+            assert exact_margin >= floor, f"cost {cents}c: exact margin {exact_margin} below floor"
+            # The attesting flag must match the exact-Decimal truth (never a
+            # float-rounding false-negative).
+            assert r["is_margin_safe"] is True, f"cost {cents}c: safe price flagged unsafe"
+
 
 class TestCostExceedsPrice:
     """P1 regression: cost >= price must refuse, not emit a surcharge labeled safe."""
