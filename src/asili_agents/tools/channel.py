@@ -162,23 +162,30 @@ def channel_send(
         conversation_id: Optional conversation ID for threading.
 
     Returns:
-        Send result including success status and message ID.
+        Send result including success status and message ID. If no send callback
+        is registered, this fails closed (``success=False`` with an ``error``)
+        rather than simulating delivery.
 
     Example:
-        >>> channel_send("telegram", "Your order has shipped!")
+        >>> channel_send("telegram", "Your order has shipped!")  # callback wired
         {"success": True, "message_id": "msg_123", "sent_at": "...", ...}
     """
     if _send_callback is not None:
         result = _send_callback(channel, body)
         return result.model_dump()
 
-    # Default: simulate successful send
+    # Fail closed: with no real send callback wired, do NOT pretend the message
+    # was delivered. The only legitimate outbound path is the approval flow
+    # (POST /api/approve), which registers a real callback. Anything reaching
+    # here without one must surface that nothing was sent — consistent with the
+    # system's fail-closed posture — rather than simulate a successful send.
     return SendResult(
-        success=True,
-        message_id=f"msg_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}",
+        success=False,
+        message_id=None,
         channel=channel,
         sent_at=datetime.now(UTC),
         body=body,
+        error="no send callback wired — message not delivered",
     ).model_dump()
 
 

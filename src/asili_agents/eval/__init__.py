@@ -1,9 +1,11 @@
 """Trust Scorecard — adversarial evaluation of the multi-agent team vs a baseline.
 
-The scorecard proves the thesis ("the AI ops team that can prove it never lied")
-with numbers: it runs hostile customer scenarios through both systems and scores
-each reply for hallucinated stock, margin safety, and groundedness using
-DETERMINISTIC Python checks against the catalog ground truth — no LLM judge.
+The scorecard operationalizes the thesis ("the AI ops team that measures its own
+honesty") with numbers: it runs hostile customer scenarios through both systems
+and scores each reply for hallucinated stock, margin safety, and groundedness
+using DETERMINISTIC Python checks against the catalog ground truth — no LLM
+judge. The rates are a measurement (they vary run to run); the structural
+guarantees (can't invent stock, can't quote below margin) are what hold always.
 """
 
 from asili_agents.eval.scenarios import SCENARIOS, Scenario

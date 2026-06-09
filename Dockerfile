@@ -22,16 +22,18 @@ RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && node --version && npm --version
 
-# --- System dependencies ---
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
-
 # --- Python dependencies ---
+# gcc is installed only to build any wheels lacking a prebuilt manylinux build,
+# then purged in the SAME layer so the build toolchain never ships in the
+# runtime image (smaller attack surface, nothing for an attacker to compile with).
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir .
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends gcc \
+    && pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir . \
+    && apt-get purge -y --auto-remove gcc \
+    && rm -rf /var/lib/apt/lists/*
 
 # --- Bake the MongoDB MCP server at an EXACT pinned version (supply-chain
 #     hardening). Installed globally as root so the binary lands on /usr/local/bin

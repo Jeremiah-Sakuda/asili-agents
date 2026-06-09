@@ -24,11 +24,6 @@ from asili_agents.data.repository import (
 # high are also never a real business policy, so clamping them out is safe.
 MAX_MARGIN_FLOOR = 0.99
 
-# Defense-in-depth cap for the margin-correction loop below. The loop only ever
-# nudges the price up by rounding error (a cent or two), so this is wildly more
-# than enough headroom while still guaranteeing the loop can never wedge.
-MAX_MARGIN_LOOP_ITERATIONS = 100_000
-
 
 class BundleItem(BaseModel):
     """An item in a bundle."""
@@ -240,19 +235,17 @@ def compute_bundle_price(
     cent = Decimal("0.01")
     bundle_price = bundle_price.quantize(cent, rounding=ROUND_CEILING)
 
-    # Belt-and-suspenders: never emit a price whose realized margin is below floor.
-    # The iteration cap is defense-in-depth — effective_margin_floor is already
-    # validated above, but a bounded loop guarantees a thread can never wedge
-    # here regardless of future changes.
+    # By construction the price already holds the floor: min_price_for_margin =
+    # total_cost / (1 - floor) yields margin == floor exactly, and rounding UP
+    # (ROUND_CEILING) can only raise it — so the check below is unreachable today.
+    # We keep ONE explicit, documented defensive correction (not a loop) so that
+    # if a future change ever broke that invariant the price is still recomputed
+    # to the exact floor-holding value rather than silently leaking below it.
     floor_dec = Decimal(str(effective_margin_floor))
-    iterations = 0
-    while (
-        bundle_price > 0
-        and (bundle_price - total_cost) / bundle_price < floor_dec
-        and iterations < MAX_MARGIN_LOOP_ITERATIONS
-    ):
-        bundle_price += cent
-        iterations += 1
+    if bundle_price > 0 and (bundle_price - total_cost) / bundle_price < floor_dec:
+        bundle_price = (total_cost / (Decimal(1) - floor_dec)).quantize(
+            cent, rounding=ROUND_CEILING
+        )
 
     # Calculate actual metrics. The safety flag is decided in EXACT Decimal space
     # against the Decimal floor — never from the float margin below — so the

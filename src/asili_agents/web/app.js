@@ -59,9 +59,9 @@ function escapeHtml(s) {
 const isInbound = (d) => d === "in" || d === "inbound";
 
 // Redact numeric claims (prices, percentages, quantities). The baseline never
-// reads the live catalog, so its numbers are guesses we cover with a
-// tamper-evident black bar — the visual half of the "signed receipt vs forged
-// carbon copy" contrast.
+// reads the live catalog, so its numbers are guesses we cover with a black bar
+// — the visual half of the "grounded reply vs ungrounded carbon copy" contrast.
+// (Cosmetic: the bar marks unverified numbers; it is not a cryptographic seal.)
 //
 // Tokenize the RAW string and escape each segment separately, so the regex never
 // runs over HTML entities (which would corrupt e.g. an escaped apostrophe). The
@@ -291,8 +291,8 @@ function renderDraft(draft) {
   $("draftCard").hidden = false;
   $("draftBody").textContent = draft.body;
 
-  // Fresh draft -> reset the "signed receipt" state (live cursor blinks again,
-  // stamp cleared) so a new reply reads as composing-not-yet-signed.
+  // Fresh draft -> reset the approval stamp state (live cursor blinks again,
+  // stamp cleared) so a new reply reads as composing / not-yet-approved.
   const bubble = $("draftBubble");
   if (bubble) bubble.classList.remove("is-signed");
   const stamp = $("draftStamp");
@@ -341,15 +341,17 @@ async function approve(action, editedBody) {
       toast.className = "result result--sent";
       // Surface the trust wording in the announced toast (the rotated stamp is
       // decorative / aria-hidden), so screen-reader users hear it too.
-      toast.textContent = `Sent ✓ — grounded reply signed, delivered to ${who}.`;
+      toast.textContent = `Sent ✓ — grounded reply approved, delivered to ${who}.`;
       $("draftStatusTag").textContent = action === "edit" ? "edited & sent" : "approved & sent";
-      // Sign the receipt: freeze the live cursor and land the GROUNDED stamp.
+      // Land the stamp: freeze the live cursor and mark the reply approved.
+      // ("Approved", not "signed" — this is the seller's approval timestamp, not
+      // a cryptographic signature.)
       const bubble = $("draftBubble");
       if (bubble) bubble.classList.add("is-signed");
       const stamp = $("draftStamp");
       if (stamp) {
         const utc = new Date().toISOString().slice(11, 19) + "Z";
-        stamp.textContent = `GROUNDED ✓ · SIGNED ${utc}`;
+        stamp.textContent = `GROUNDED ✓ · APPROVED ${utc}`;
         stamp.hidden = false;
       }
     }

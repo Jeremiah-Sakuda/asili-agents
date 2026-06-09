@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#0B0E0C" />
   <meta name="color-scheme" content="dark" />
-  <meta name="description" content="Asili — the AI ops team that can prove it never lied. Every reply is a signed, tamper-evident receipt grounded in the seller's live catalog." />
+  <meta name="description" content="Asili — the AI ops team that measures its own honesty. Every reply is grounded in the seller's live catalog, priced by a deterministic engine, and held for the seller's one-tap approval." />
   <title>ASILI//  Trust Terminal</title>
   <!-- Same-origin static assets only. No CDNs, no build step, no web fonts. -->
   <link rel="stylesheet" href="./styles.css" />
@@ -93,7 +93,7 @@
         <ol class="rail" id="rail"></ol>
       </article>
 
-      <!-- 3b) DRAFT REPLY: grounded ledger + the signed receipt + approve/edit/reject -->
+      <!-- 3b) DRAFT REPLY: grounded ledger + the grounded reply + approve/edit/reject -->
       <article class="card panel draft" id="draftCard" hidden aria-label="Drafted reply">
         <div class="panel__head">
           <h2 class="panel__title"><span class="prompt">▸</span> Grounded reply</h2>
@@ -103,7 +103,7 @@
         <!-- Grounded business facts, printed as a ledger of line items -->
         <div class="facts" id="facts"></div>
 
-        <!-- The composed reply, rendered as a tamper-evident receipt -->
+        <!-- The composed reply, rendered as a receipt-style card -->
         <div class="draft-bubble" id="draftBubble">
           <span class="receipt__rule" aria-hidden="true">— GROUNDED REPLY ————</span>
           <p class="draft-bubble__body" id="draftBody"></p>
@@ -133,14 +133,14 @@
         <div class="result" id="approveResult" hidden role="status" aria-live="polite"></div>
       </article>
 
-      <!-- 4) BASELINE: "What a plain chatbot would send" — the forged carbon copy -->
+      <!-- 4) BASELINE: "What a plain chatbot would send" — the ungrounded carbon copy -->
       <article class="card panel panel--muted baseline" id="baselineCard" hidden aria-label="Plain chatbot comparison">
         <div class="panel__head">
           <h2 class="panel__title"><span class="prompt">▸</span> Ungrounded chatbot</h2>
           <span class="panel__tag panel__tag--bad">no tools · unverified</span>
         </div>
         <div class="baseline-bubble" id="baselineBubble">
-          <span class="receipt__rule receipt__rule--bad" aria-hidden="true">— CARBON COPY · UNSIGNED —</span>
+          <span class="receipt__rule receipt__rule--bad" aria-hidden="true">— CARBON COPY · NOT GROUNDED —</span>
           <p class="baseline-bubble__body" id="baselineBody"></p>
           <div class="warnings" id="baselineWarnings"></div>
         </div>

@@ -1,6 +1,6 @@
 # Asili Operations Team — Architecture
 
-> **The one-line thesis:** *Asili is the AI operations team that can prove it never lied.*
+> **The one-line thesis:** *Asili is the AI operations team that measures its own honesty — built so it structurally cannot invent stock or quote below margin, and scores the rest on a re-runnable Trust Scorecard.*
 > Every customer-facing answer is grounded in the seller's **live MongoDB Atlas catalog** (read through the MongoDB MCP server in `--readOnly` mode), every price comes from a **deterministic Decimal margin engine** (never the LLM), and **nothing sends without the seller's one-tap approval**. A **Trust Scorecard** runs adversarial scenarios through the multi-agent team and a **fair single-agent baseline** (the full catalog in its prompt, minus the live grounding and the deterministic pricing engine), and scores hallucination, margin-safety, and groundedness.
 
 This document describes the runtime honestly: the diagram below is the architecture the system runs, and the [Implementation status](#implementation-status-honest-runtime-notes) section spells out exactly what is wired today versus the one remaining increment (persisting trust artifacts back to Atlas).
@@ -164,7 +164,7 @@ Two failure modes sink naive seller-bots: **inventing stock** and **quoting belo
 - **No invented stock.** The Messaging agent's only route to availability data is `check_stock` → MCPToolset → MongoDB MCP server (`--readOnly`) → Atlas. It has no other source of inventory numbers, so a stock claim is either a read of the live catalog or it doesn't happen. `--readOnly` additionally guarantees a confused agent can't corrupt the very data it's grounding on.
 - **No below-margin quotes.** Pricing is forbidden from doing arithmetic and must call `compute_bundle_price`, where the 45% floor is enforced by a `max()` over `Decimal` values. The LLM contributes intent ("offer a bundle"); the floor is math. You cannot prompt-inject your way past a `max()`.
 - **No silent send.** Even a perfect draft cannot reach a customer without the seller's tap. The approval gate converts the LLM from an autonomous sender into a drafting assistant.
-- **Everything is auditable.** Every routing, grounding, and pricing decision is logged and written to Atlas, so any answer can be replayed back to the exact facts and the exact deterministic computation that produced it. That is what "the AI ops team that can prove it never lied" means concretely.
+- **Everything is auditable.** Every routing, grounding, and pricing decision is logged with the exact facts and the exact deterministic computation that produced it, so any answer can be replayed back to its inputs. (Conversations and drafts persist to Atlas today; the decision log and eval runs are in-process — see the implementation-status section.) That replayability is what "measures its own honesty" means concretely.
 
 ---
 
@@ -176,7 +176,7 @@ The Trust Scorecard turns the trust claim into a number. It runs a battery of **
 - **`margin_safe_rate`** — share of quoted prices at or above the 45% floor (deterministically checkable against `compute_bundle_price`).
 - **`grounded_rate`** — share of factual claims traceable to a catalog read.
 
-It returns `{ team: { …, scenarios:[{id, prompt, passed, issues}] }, baseline: { … }, summary }` in the API response (persisting the run to `eval_runs` in Atlas is the remaining write-path increment). The expected story: the **team scores near-perfect** on all three because grounding and the margin engine are structural; the **fair baseline still slips** — even with the full catalog and the 45% rule in its prompt and a careful instruction, a single model recalls stock imperfectly and does margin math in its head. The delta is the value proof, and because the baseline is genuinely fair it isolates the team's *architecture* (live grounding + the deterministic engine), not a data advantage.
+It returns `{ team: { …, scenarios:[{id, prompt, passed, issues}] }, baseline: { … }, summary }` in the API response (persisting the run to `eval_runs` in Atlas is the remaining write-path increment). The expected story: the **team scores near-perfect** on all three because grounding and the margin engine are structural; the **fair baseline still slips** — even with the full catalog and the 45% rule in its prompt and a careful instruction, a single model recalls stock imperfectly and does margin math in its head. The delta is the value proof, and because the baseline is genuinely fair it isolates the team's *architecture* (live grounding + the deterministic engine), not a data advantage. Read the team's rates as **measured, not fixed** — live retrieval is non-deterministic, so `grounded_rate` runs high but varies run to run rather than sitting at a guaranteed 100%; the *structural* guarantees (can't invent stock, can't quote below margin) are what hold every time.
 
 ---
 

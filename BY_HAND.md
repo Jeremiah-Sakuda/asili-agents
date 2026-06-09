@@ -2,7 +2,7 @@
 
 **Owner:** Jeremiah Sakuda (solo founder) · **Deadline:** Wed June 11, 2026, 2:00 PM PT
 **Repo:** https://github.com/Jeremiah-Sakuda/asili-agents · **Track:** MongoDB partner track
-**Thesis to defend on camera:** "the AI ops team that can prove it never lied" — every customer answer is grounded in the seller's live MongoDB Atlas catalog (read via the MongoDB MCP server, `--readOnly`), prices come from a deterministic Python margin engine (45% floor), and nothing sends without one-tap approval.
+**Thesis to defend on camera:** "the AI ops team that measures its own honesty" — every customer answer is grounded in the seller's live MongoDB Atlas catalog (read via the MongoDB MCP server, `--readOnly`), prices come from a deterministic Python margin engine (45% floor), nothing sends without one-tap approval, and a re-runnable Trust Scorecard puts a number on it. (Structural guarantees hold every run; the scorecard rates are measured and vary — don't promise a fixed 100%.)
 
 This file lists the things that **cannot be done in code** and must be done by hand. Do them in order.
 
@@ -170,7 +170,7 @@ If `npx` cold-start is slow on first request, pre-warm: keep Cloud Run `--min-in
 ## 6) Record the ≤3-minute demo video
 
 Cannot be automated. Record against the **live Cloud Run URL** (so judges see it is really hosted).
-- Use the beat-by-beat demo script you'll be given. Hit these beats: (1) the customer DM "Do you have the purple tea in stock? Can you do a bundle?"; (2) the **team** answers grounded — in stock (6 tins), 2-tin bundle ~$34 at ~57% margin, floor held, with cited sources/reasoning trace; (3) the **baseline** lies — "32 tins, 30% off $25.20" (hallucinated stock + margin breach); (4) the **Atlas edit live** (change stock in Atlas, re-ask, number changes — the "it can prove it never lied" moment); (5) the **Trust Scorecard** (`/api/eval`) showing team vs baseline hallucination / margin-safety / groundedness.
+- Use the beat-by-beat script in **[DEMO_SCRIPT.md](DEMO_SCRIPT.md)**. Hit these beats: (1) the customer DM "Do you have the purple tea in stock? Can you do a bundle?"; (2) the **team** answers grounded — in stock (6 tins), 2-tin bundle ~$34 at ~57% margin, floor held, with cited sources/reasoning trace; (3) the **baseline** slips — over-promises stock / breaches margin without live grounding; (4) the **Atlas edit live** (change stock in Atlas, re-ask, number changes — the live falsification moment, the most persuasive beat); (5) the **Trust Scorecard** (`/api/eval`) showing team vs baseline hallucination / margin-safety / groundedness.
 - Screen-record at 1080p, narrate the thesis in the first 15 seconds.
 - Upload to **YouTube (Unlisted)** or Vimeo. Set visibility so judges can view without login. Copy the link for Devpost.
 - **Competition rule:** keep third-party logos/trademarks out of frame (no WhatsApp/Instagram marks, no MongoDB/Google logos beyond what's permitted). Use the "Asili" brand only, violet accent.
@@ -190,7 +190,7 @@ Cannot be automated. Record against the **live Cloud Run URL** (so judges see it
 
 All by hand on the Devpost project page for this hackathon.
 1. **Create the project submission** on the Rapid Agent Hackathon Devpost; **select the MongoDB track** (and any required "Glass-Box" / partner checkboxes).
-2. **Text description** — what it does, the "prove it never lied" thesis, the multi-agent vs baseline contrast, and the Trust Scorecard. Plain language; lead with the problem (micro-sellers selling via DMs).
+2. **Text description** — what it does, the "measures its own honesty" thesis, the multi-agent vs baseline contrast, and the Trust Scorecard. Plain language; lead with the problem (micro-sellers selling via DMs).
 3. **Data sources** — state clearly: live seller catalog in **MongoDB Atlas**, read at inference time through the **MongoDB MCP server (`--readOnly`)**; prices from a deterministic Python margin engine (45% floor); no third-party data.
 4. **Hosted URL** — paste the locked Cloud Run URL (Step 4).
 5. **Public repo URL** — `https://github.com/Jeremiah-Sakuda/asili-agents`. **Make the repo public** before submitting (Settings → General → Change visibility) and confirm it builds from a clean clone.
