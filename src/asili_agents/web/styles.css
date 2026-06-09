@@ -552,7 +552,7 @@ ol, ul { list-style: none; }
 .fact--signal .fact__val { color: var(--warn); }
 .fact__sub { display: block; font-size: 10px; color: var(--ink-muted); margin-top: 2px; letter-spacing: 0.02em; }
 
-/* ---- The signed receipt (draft reply) --------------------------------- */
+/* ---- The grounded reply (receipt-style draft) ------------------------- */
 .draft-bubble {
   background:
     linear-gradient(180deg, var(--surface-2), var(--bg-alt));
@@ -562,7 +562,7 @@ ol, ul { list-style: none; }
   margin-bottom: 13px;
   position: relative;
   box-shadow: var(--bezel-lift);
-  /* tamper-evident torn bottom edge */
+  /* torn receipt-style bottom edge (decorative) */
   -webkit-mask:
     linear-gradient(#000 0 0) padding-box,
     conic-gradient(from -45deg at bottom, #0000 0 90deg, #000 0) 0 100% / 11px 6px repeat-x;
@@ -636,7 +636,7 @@ ol, ul { list-style: none; }
 }
 .chip--source:hover::before { background: var(--bg-base); box-shadow: none; }
 
-/* GROUNDED ✓ · SIGNED stamp landing on approve */
+/* GROUNDED ✓ · APPROVED stamp landing on approve */
 .draft-stamp {
   position: absolute;
   right: 10px;

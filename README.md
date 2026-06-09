@@ -1,6 +1,6 @@
-# Asili — the AI ops team that can prove it never lied
+# Asili — the AI ops team that measures its own honesty
 
-> **Rapid Agent Hackathon · MongoDB track.** A Google ADK multi-agent operations team for underrepresented micro-sellers. Every customer-facing answer is grounded in the seller's **live MongoDB Atlas catalog** (read through the **MongoDB MCP server**, `--readOnly`), priced by a **deterministic Python margin engine**, and held behind a **one-tap human approval gate**. A built-in **Trust Scorecard** runs adversarial scenarios through the team and scores hallucination, margin-safety, and groundedness against a **fair single-agent baseline** (the same catalog in its prompt, minus the live grounding and the pricing engine) — so the system's honesty is a measured number, not a marketing claim.
+> **A Google ADK multi-agent operations team for underrepresented micro-sellers, grounded in live MongoDB Atlas.** Every customer-facing answer is grounded in the seller's **live MongoDB Atlas catalog** (read through the **MongoDB MCP server**, `--readOnly`), priced by a **deterministic Python margin engine**, and held behind a **one-tap human approval gate**. A built-in **Trust Scorecard** runs adversarial scenarios through the team and scores hallucination, margin-safety, and groundedness against a **fair single-agent baseline** (the same catalog in its prompt, minus the live grounding and the pricing engine) — so the system's honesty is a measured number, not a marketing claim.
 
 > 🔗 **Live demo:** **https://asili-agents-u42sxjnqkq-uc.a.run.app/app/** — grounded in live MongoDB Atlas via the MongoDB MCP server (`GET /` shows `data_source: atlas`, `mcp_grounding: true`).
 > 📺 **Demo video:** added with the final submission — the **[live demo](https://asili-agents-u42sxjnqkq-uc.a.run.app/app/)** above is fully interactive in the meantime. · 🗂️ Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
@@ -112,7 +112,10 @@ Each scenario is scored on three axes:
 | **Margin-safe rate** | Did every quoted price clear the 45% floor? |
 | **Grounded rate** | Did the reply give a substantive, non-over-claiming answer backed by an actual catalog lookup (not a lucky guess or a vague non-answer)? |
 
-The scorecard returns per-scenario pass/fail with the specific issues found, plus aggregate rates for team vs. baseline. The thesis — *"the AI ops team that can prove it never lied"* — is exactly this delta, rendered as numbers anyone can re-run.
+The scorecard returns per-scenario pass/fail with the specific issues found, plus aggregate rates for team vs. baseline. Two things are worth separating honestly:
+
+- **Structural guarantees (hold every time, by construction):** the team **cannot invent stock** — its only data path is a read-only catalog read — and it **cannot quote below the 45% margin** — every price comes from the deterministic engine. These aren't measured; they're properties of the architecture.
+- **The measured rates (vary run to run):** `grounded_rate`, `margin_safe_rate`, and `hallucination_rate` are a *measurement*, and because live retrieval is non-deterministic the numbers move — in testing we've observed the team's grounded rate roughly in the **80–100%** range, well above the no-grounding baseline, but it is **not** a fixed 100%. The point isn't a perfect score; it's that honesty is a number you can **re-run and watch**, against a scorer ([`eval/scoring.py`](src/asili_agents/eval/scoring.py)) that is a deterministic heuristic, not a general-purpose lie detector.
 
 > **Honest scope.** The scorecard's checks are deterministic Python heuristics, hardened against common paraphrases (comma-formatted numbers, `%`/word/fraction discounts, "$X off", spelled-out and compound numbers, contrastive clauses) — not a general-purpose lie detector. The *structural* guarantees are the two it measures against: the deterministic margin engine (the LLM cannot author a price) and read-only MCP grounding (the agent cannot invent or mutate inventory).
 
@@ -255,6 +258,16 @@ If a claim here isn't true in the code, that's a bug, and we'd rather fix it tha
 
 ---
 
+## Business model
+
+The **seller is the customer.** Asili is a per-seller SaaS back-office: a free Starter tier to remove adoption friction, then **$29/mo Operator** (all DM channels, unlimited approved replies, the Trust Scorecard) and **$79/mo Studio** (multi-brand + team seats + audit export).
+
+The pitch is one number: **it costs less than a single avoided mistake.** A thin-margin importer doing ~$5k/mo GMV bleeds an estimated **~$70–90/mo** to phantom-inventory refunds and below-margin discounts — both of which Asili prevents *structurally* (read-only grounding can't invent stock; the deterministic engine can't quote below the 45% floor). So the $29 plan pays for itself on the first prevented chargeback, every month. Reached through diaspora community networks (low-CAC, referral-led), a focused 5,000-seller beachhead is **~$1.7M ARR**.
+
+→ Full pricing, bottom-up TAM/SAM, per-seller unit economics, and the (honest) validation plan: **[docs/BUSINESS.md](docs/BUSINESS.md)**. *These are a founder-built hypothesis, not traction — labeled as such on purpose.*
+
+---
+
 ## Roadmap / out of scope
 
 The build deliberately focuses on the seller-facing operations agents and the deterministic trust core. **Shipped:** the web console, a live **Telegram** customer-DM channel behind the approval gate (see [docs/TELEGRAM.md](docs/TELEGRAM.md)), and durable persistence of conversations + pending drafts to Atlas. Intentionally **not** built yet:
@@ -271,6 +284,7 @@ The build deliberately focuses on the seller-facing operations agents and the de
 - [docs/API.md](docs/API.md) — complete REST API reference
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — setup, project structure, configuration (env vars), and tooling
 - [docs/TRUST_SCORECARD.md](docs/TRUST_SCORECARD.md) — how the deterministic scorer works and its honest limits
+- [docs/BUSINESS.md](docs/BUSINESS.md) — business model, pricing, bottom-up market sizing, per-seller ROI, and the validation plan
 - [docs/TELEGRAM.md](docs/TELEGRAM.md) — the Telegram customer-DM channel (webhook → approval gate → delivery)
 - [BY_HAND.md](BY_HAND.md) — founder's submission checklist (demo video, Devpost form, secret rotation); the code prerequisites are done and verified live
 

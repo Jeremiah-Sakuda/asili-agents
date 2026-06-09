@@ -52,6 +52,8 @@ The whole point is the **contrast**, not the absolute numbers. `runner.py`'s `ru
 Asili team: 100% grounded, 100% margin-safe, 0% hallucination. Baseline: 0% grounded, 33% margin-safe, 50% hallucination.
 ```
 
+> **Illustrative, not a guarantee.** Those numbers are an *example* of the summary format. The live rates are **measured and vary run to run** — because the team grounds via live retrieval (non-deterministic), `grounded_rate` runs high but is **not** a fixed 100% (in testing we've observed roughly the 80–100% band). What *is* fixed, every run, are the **structural** guarantees: the team cannot invent stock (read-only grounding) and cannot quote below the margin floor (the deterministic engine). Read the scorecard as a re-runnable measurement of behavior, not a promise of a perfect score.
+
 The response shape from `run_scorecard` is:
 
 ```json

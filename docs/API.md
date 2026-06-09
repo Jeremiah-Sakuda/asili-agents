@@ -18,19 +18,19 @@ The Asili Operations Team backend is a [FastAPI](https://fastapi.tiangolo.com/) 
 
 ### CORS
 
-CORS is wide open via `CORSMiddleware`:
+CORS allows any origin (the demo is a static SPA served same-origin; the API is also callable cross-origin), but **without** credentials — the `allow_origins=["*"]` + `allow_credentials=True` combination is unsafe and browser-rejected, so credentials are off:
 
 ```python
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # "Configure properly in production"
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,   # "*" + credentials is an unsafe, browser-rejected mix
     allow_methods=["*"],
     allow_headers=["*"],
 )
 ```
 
-Any origin may call the API with any method/header. The source explicitly flags this for production tightening.
+Any origin may call the API with any method/header, but cannot send cookies/credentials. Locking `allow_origins` to the known frontend origin is the production tightening step.
 
 ### Which endpoints issue real Gemini calls
 

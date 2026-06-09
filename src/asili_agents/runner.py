@@ -5,6 +5,7 @@ InMemoryRunner. It replaces the scripted demo with real LLM agent runs.
 """
 
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -125,8 +126,11 @@ def create_baseline_runner(
 ) -> InMemoryRunner:
     """Create an ADK InMemoryRunner with the baseline (single) agent.
 
-    The baseline agent has no tools - it relies entirely on the catalog
-    dump in its context. This is designed to fail in predictable ways.
+    The baseline is a *fair* control: it gets the full catalog snapshot (stock,
+    cost, the 45% rule) in its prompt and a careful instruction to answer
+    accurately. It has no tools — no live grounding and no deterministic pricing
+    engine — so the team-vs-baseline delta measures architecture, not a data
+    handicap.
 
     Args:
         seller: The seller entity.
@@ -212,7 +216,7 @@ def _finalize_run(
         steps=steps,
         draft=draft,
         draft_sources=list(set(draft_sources)),
-        facts=_collect_grounded_facts(),
+        facts=_collect_grounded_facts(raw_events),
         raw_events=raw_events,
         success=True,
     )
@@ -404,27 +408,52 @@ def _event_to_dict(event: Event) -> dict[str, Any]:
     return result
 
 
-def _collect_grounded_facts() -> dict[str, Any]:
-    """Collect grounded business facts from the decision log."""
+def _collect_grounded_facts(raw_events: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Collect grounded business facts for the UI facts panel.
+
+    Prefer STRUCTURED tool outputs — the typed dicts the catalog/pricing tools
+    actually returned (captured as ``function_response`` parts in ``raw_events``)
+    — so facts are read from real values, not parsed out of free-text reasoning.
+    Only fall back to scraping the decision-log prose for a value the structured
+    path didn't supply (e.g. the MCP grounding path, whose tool results are raw
+    Atlas documents rather than the in-process tool dicts).
+    """
     facts: dict[str, Any] = {}
 
-    for decision in get_decision_log():
-        # Extract facts from reasoning traces
-        if "stock" in decision.reasoning_trace.lower():
-            # Parse stock info from trace
-            import re
+    # 1) Structured: read the tools' own function responses.
+    for event in raw_events or []:
+        for part in (event.get("content") or {}).get("parts") or []:
+            fr = part.get("function_response")
+            if not fr:
+                continue
+            name = fr.get("name")
+            resp = fr.get("response")
+            # ADK may wrap the tool's return under a "result" key.
+            if isinstance(resp, dict) and isinstance(resp.get("result"), dict):
+                resp = resp["result"]
+            if not isinstance(resp, dict):
+                continue
+            if name == "check_stock" and resp.get("quantity") is not None:
+                facts["stock_quantity"] = resp["quantity"]
+                if resp.get("level"):
+                    facts["stock_level"] = resp["level"]
+            elif name == "compute_bundle_price" and resp.get("bundle_price") is not None:
+                facts["bundle_price"] = resp["bundle_price"]
+                if resp.get("is_margin_safe") is not None:
+                    facts["is_margin_safe"] = resp["is_margin_safe"]
 
-            match = re.search(r"Stock:\s*(\d+)\s*units?,\s*(\w+)", decision.reasoning_trace)
-            if match:
-                facts["stock_quantity"] = int(match.group(1))
-                facts["stock_level"] = match.group(2)
-
-        if "bundle" in decision.reasoning_trace.lower():
-            # Parse bundle price from trace
-            import re
-
-            match = re.search(r"\$(\d+\.?\d*)", decision.reasoning_trace)
-            if match:
-                facts["bundle_price"] = float(match.group(1))
+    # 2) Fallback: recover anything still missing from the decision-log prose.
+    if "stock_quantity" not in facts or "bundle_price" not in facts:
+        for decision in get_decision_log():
+            trace = decision.reasoning_trace
+            if "stock_quantity" not in facts and "stock" in trace.lower():
+                match = re.search(r"Stock:\s*(\d+)\s*units?,\s*(\w+)", trace)
+                if match:
+                    facts["stock_quantity"] = int(match.group(1))
+                    facts["stock_level"] = match.group(2)
+            if "bundle_price" not in facts and "bundle" in trace.lower():
+                match = re.search(r"\$(\d+\.?\d*)", trace)
+                if match:
+                    facts["bundle_price"] = float(match.group(1))
 
     return facts

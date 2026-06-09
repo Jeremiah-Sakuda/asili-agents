@@ -59,9 +59,9 @@ function escapeHtml(s) {
 const isInbound = (d) => d === "in" || d === "inbound";
 
 // Redact numeric claims (prices, percentages, quantities). The baseline never
-// reads the live catalog, so its numbers are guesses we cover with a
-// tamper-evident black bar — the visual half of the "signed receipt vs forged
-// carbon copy" contrast.
+// reads the live catalog, so its numbers are guesses we cover with a black bar
+// — the visual half of the "grounded reply vs ungrounded carbon copy" contrast.
+// (Cosmetic: the bar marks unverified numbers; it is not a cryptographic seal.)
 //
 // Tokenize the RAW string and escape each segment separately, so the regex never
 // runs over HTML entities (which would corrupt e.g. an escaped apostrophe). The
@@ -239,7 +239,9 @@ async function draftWithAsili() {
       body: JSON.stringify({ conversation_id: state.activeId }),
     });
     await streamRail(result.steps || []);
-    $("railTag").textContent = "live trace";
+    // The run already completed above; streamRail animates the captured steps,
+    // so label it a replay rather than implying a live stream.
+    $("railTag").textContent = "trace · replay";
     renderFacts(result.facts || []);
     renderDraft(result.draft);
     baselinePromise.then(renderBaseline);
@@ -291,8 +293,8 @@ function renderDraft(draft) {
   $("draftCard").hidden = false;
   $("draftBody").textContent = draft.body;
 
-  // Fresh draft -> reset the "signed receipt" state (live cursor blinks again,
-  // stamp cleared) so a new reply reads as composing-not-yet-signed.
+  // Fresh draft -> reset the approval stamp state (live cursor blinks again,
+  // stamp cleared) so a new reply reads as composing / not-yet-approved.
   const bubble = $("draftBubble");
   if (bubble) bubble.classList.remove("is-signed");
   const stamp = $("draftStamp");
@@ -338,18 +340,29 @@ async function approve(action, editedBody) {
       $("draftStatusTag").className = "panel__tag panel__tag--bad";
     } else {
       const who = result.message ? result.message.sender_name : "the customer";
+      const edited = action === "edit";
       toast.className = "result result--sent";
       // Surface the trust wording in the announced toast (the rotated stamp is
-      // decorative / aria-hidden), so screen-reader users hear it too.
-      toast.textContent = `Sent ✓ — grounded reply signed, delivered to ${who}.`;
-      $("draftStatusTag").textContent = action === "edit" ? "edited & sent" : "approved & sent";
-      // Sign the receipt: freeze the live cursor and land the GROUNDED stamp.
+      // decorative / aria-hidden), so screen-reader users hear it too. An EDITED
+      // reply was hand-changed by the seller and was NOT re-grounded, so we must
+      // not claim it is grounded — honesty over polish.
+      toast.textContent = edited
+        ? `Sent ✓ — your edited reply was delivered to ${who} (edited by you, not re-grounded).`
+        : `Sent ✓ — grounded reply approved, delivered to ${who}.`;
+      $("draftStatusTag").textContent = edited ? "edited & sent" : "approved & sent";
+      // Land the stamp: freeze the live cursor and mark the reply approved.
+      // ("Approved", not "signed" — this is the seller's approval timestamp, not
+      // a cryptographic signature.) For an edited reply the GROUNDED mark is
+      // withheld, because the edited text was never re-checked against the catalog.
       const bubble = $("draftBubble");
       if (bubble) bubble.classList.add("is-signed");
       const stamp = $("draftStamp");
       if (stamp) {
         const utc = new Date().toISOString().slice(11, 19) + "Z";
-        stamp.textContent = `GROUNDED ✓ · SIGNED ${utc}`;
+        stamp.textContent = edited
+          ? `EDITED ✎ · not re-grounded · APPROVED ${utc}`
+          : `GROUNDED ✓ · APPROVED ${utc}`;
+        stamp.classList.toggle("draft-stamp--edited", edited);
         stamp.hidden = false;
       }
     }
