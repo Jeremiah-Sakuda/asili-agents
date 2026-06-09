@@ -239,7 +239,9 @@ async function draftWithAsili() {
       body: JSON.stringify({ conversation_id: state.activeId }),
     });
     await streamRail(result.steps || []);
-    $("railTag").textContent = "live trace";
+    // The run already completed above; streamRail animates the captured steps,
+    // so label it a replay rather than implying a live stream.
+    $("railTag").textContent = "trace · replay";
     renderFacts(result.facts || []);
     renderDraft(result.draft);
     baselinePromise.then(renderBaseline);
@@ -338,20 +340,29 @@ async function approve(action, editedBody) {
       $("draftStatusTag").className = "panel__tag panel__tag--bad";
     } else {
       const who = result.message ? result.message.sender_name : "the customer";
+      const edited = action === "edit";
       toast.className = "result result--sent";
       // Surface the trust wording in the announced toast (the rotated stamp is
-      // decorative / aria-hidden), so screen-reader users hear it too.
-      toast.textContent = `Sent ✓ — grounded reply approved, delivered to ${who}.`;
-      $("draftStatusTag").textContent = action === "edit" ? "edited & sent" : "approved & sent";
+      // decorative / aria-hidden), so screen-reader users hear it too. An EDITED
+      // reply was hand-changed by the seller and was NOT re-grounded, so we must
+      // not claim it is grounded — honesty over polish.
+      toast.textContent = edited
+        ? `Sent ✓ — your edited reply was delivered to ${who} (edited by you, not re-grounded).`
+        : `Sent ✓ — grounded reply approved, delivered to ${who}.`;
+      $("draftStatusTag").textContent = edited ? "edited & sent" : "approved & sent";
       // Land the stamp: freeze the live cursor and mark the reply approved.
       // ("Approved", not "signed" — this is the seller's approval timestamp, not
-      // a cryptographic signature.)
+      // a cryptographic signature.) For an edited reply the GROUNDED mark is
+      // withheld, because the edited text was never re-checked against the catalog.
       const bubble = $("draftBubble");
       if (bubble) bubble.classList.add("is-signed");
       const stamp = $("draftStamp");
       if (stamp) {
         const utc = new Date().toISOString().slice(11, 19) + "Z";
-        stamp.textContent = `GROUNDED ✓ · APPROVED ${utc}`;
+        stamp.textContent = edited
+          ? `EDITED ✎ · not re-grounded · APPROVED ${utc}`
+          : `GROUNDED ✓ · APPROVED ${utc}`;
+        stamp.classList.toggle("draft-stamp--edited", edited);
         stamp.hidden = false;
       }
     }
