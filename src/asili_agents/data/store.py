@@ -25,6 +25,7 @@ class ConversationStore(Protocol):
 
     def get_conversation(self, conversation_id: str) -> Conversation | None: ...
     def save_conversation(self, conversation_id: str, conversation: Conversation) -> None: ...
+    def delete_conversation(self, conversation_id: str) -> None: ...
     def list_conversations(self) -> list[tuple[str, Conversation]]: ...
     def get_pending(self, conversation_id: str) -> dict[str, Any] | None: ...
     def set_pending(self, conversation_id: str, draft: dict[str, Any]) -> None: ...
@@ -49,6 +50,9 @@ class InMemoryStore:
 
     def save_conversation(self, conversation_id: str, conversation: Conversation) -> None:
         self._conversations[conversation_id] = conversation
+
+    def delete_conversation(self, conversation_id: str) -> None:
+        self._conversations.pop(conversation_id, None)
 
     def list_conversations(self) -> list[tuple[str, Conversation]]:
         return list(self._conversations.items())
@@ -112,6 +116,9 @@ class MongoStore:
             {"_id": conversation_id}, {"_id": conversation_id, **data}, upsert=True
         )
 
+    def delete_conversation(self, conversation_id: str) -> None:
+        self._conversations.delete_one({"_id": conversation_id})
+
     def list_conversations(self) -> list[tuple[str, Conversation]]:
         out: list[tuple[str, Conversation]] = []
         for doc in self._conversations.find():
@@ -140,3 +147,61 @@ class MongoStore:
     def clear(self) -> None:
         self._conversations.delete_many({})
         self._drafts.delete_many({})
+
+
+class TenantScopedStore:
+    """A thin multi-tenant path: wrap any ``ConversationStore`` and namespace
+    every key by ``seller_id``, so N sellers share one backend with zero
+    cross-tenant collision — each seller sees only its own conversations and
+    pending drafts, and ``clear()`` only touches that seller's data. The same
+    single-tenant store (in-memory or Mongo) now serves a marketplace of sellers
+    without rearchitecting it; the API resolves the seller per request and hands
+    the agents this scoped view.
+    """
+
+    def __init__(self, inner: ConversationStore, seller_id: str) -> None:
+        self._inner = inner
+        self._seller_id = seller_id
+        self._prefix = f"{seller_id}:"
+
+    def _key(self, conversation_id: str) -> str:
+        # Idempotent: don't double-prefix an already-scoped id.
+        return conversation_id if conversation_id.startswith(self._prefix) else f"{self._prefix}{conversation_id}"
+
+    def _strip(self, scoped_id: str) -> str:
+        return scoped_id[len(self._prefix) :] if scoped_id.startswith(self._prefix) else scoped_id
+
+    def get_conversation(self, conversation_id: str) -> Conversation | None:
+        return self._inner.get_conversation(self._key(conversation_id))
+
+    def save_conversation(self, conversation_id: str, conversation: Conversation) -> None:
+        self._inner.save_conversation(self._key(conversation_id), conversation)
+
+    def delete_conversation(self, conversation_id: str) -> None:
+        self._inner.delete_conversation(self._key(conversation_id))
+
+    def list_conversations(self) -> list[tuple[str, Conversation]]:
+        return [
+            (self._strip(cid), conv)
+            for cid, conv in self._inner.list_conversations()
+            if cid.startswith(self._prefix)
+        ]
+
+    def get_pending(self, conversation_id: str) -> dict[str, Any] | None:
+        return self._inner.get_pending(self._key(conversation_id))
+
+    def set_pending(self, conversation_id: str, draft: dict[str, Any]) -> None:
+        self._inner.set_pending(self._key(conversation_id), draft)
+
+    def delete_pending(self, conversation_id: str) -> None:
+        self._inner.delete_pending(self._key(conversation_id))
+
+    def has_pending(self, conversation_id: str) -> bool:
+        return self._inner.has_pending(self._key(conversation_id))
+
+    def clear(self) -> None:
+        # Only this tenant's data — never the shared backend.
+        for scoped_id, _ in self._inner.list_conversations():
+            if scoped_id.startswith(self._prefix):
+                self._inner.delete_conversation(scoped_id)
+                self._inner.delete_pending(scoped_id)

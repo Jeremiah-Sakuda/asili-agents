@@ -3,7 +3,7 @@
 import uuid
 
 from asili_agents.data.models import Conversation, ConversationStatus, MessageDirection
-from asili_agents.data.store import InMemoryStore
+from asili_agents.data.store import InMemoryStore, TenantScopedStore
 
 
 def _conv(name: str = "Amina") -> Conversation:
@@ -57,3 +57,40 @@ class TestSerializationRoundTrip:
         assert len(restored.messages) == 1
         assert restored.messages[0].body == "purple tea?"
         assert restored.messages[0].direction == MessageDirection.INBOUND
+
+
+class TestTenantScopedStore:
+    """Thin multi-tenancy: two sellers share one backend with zero collision."""
+
+    def test_same_conversation_id_does_not_collide(self):
+        backend = InMemoryStore({}, {})
+        a = TenantScopedStore(backend, "sellerA")
+        b = TenantScopedStore(backend, "sellerB")
+        a.save_conversation("c1", _conv("Amara"))
+        b.save_conversation("c1", _conv("Kofi"))
+        assert a.get_conversation("c1").customer_name == "Amara"
+        assert b.get_conversation("c1").customer_name == "Kofi"
+        # The shared backend holds both, namespaced.
+        assert {cid for cid, _ in backend.list_conversations()} == {"sellerA:c1", "sellerB:c1"}
+
+    def test_list_and_pending_are_scoped(self):
+        backend = InMemoryStore({}, {})
+        a = TenantScopedStore(backend, "sellerA")
+        b = TenantScopedStore(backend, "sellerB")
+        a.save_conversation("c1", _conv())
+        b.save_conversation("c2", _conv())
+        a.set_pending("c1", {"body": "Yes"})
+        assert [cid for cid, _ in a.list_conversations()] == ["c1"]
+        assert [cid for cid, _ in b.list_conversations()] == ["c2"]
+        assert a.has_pending("c1") is True
+        assert b.has_pending("c1") is False
+
+    def test_clear_only_affects_one_tenant(self):
+        backend = InMemoryStore({}, {})
+        a = TenantScopedStore(backend, "sellerA")
+        b = TenantScopedStore(backend, "sellerB")
+        a.save_conversation("c1", _conv())
+        b.save_conversation("c1", _conv())
+        a.clear()
+        assert a.list_conversations() == []
+        assert [cid for cid, _ in b.list_conversations()] == ["c1"]
