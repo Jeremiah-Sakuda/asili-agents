@@ -12,6 +12,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
+from asili_agents.tools import autonomy
+from asili_agents.tools.autonomy import AutonomyPolicy, AutonomyTier
+
 
 class ApprovalStatus(str, Enum):
     """Status of an approval request."""
@@ -52,11 +55,22 @@ _send_callback: Callable[[str, str], SendResult] | None = None
 # nothing is ever sent unsupervised.
 _auto_approve_enabled: bool = False
 
+# Active seller autonomy policy ("trust ladder"). None = fail closed: every
+# decision holds for approval. When set + enabled, a low-risk, policy-allowed,
+# structurally-safe decision executes at Tier 1 without per-action approval.
+_autonomy_policy: AutonomyPolicy | None = None
+
 
 def set_auto_approve(enabled: bool) -> None:
     """Enable auto-approval for non-interactive demos. Off by default (fail closed)."""
     global _auto_approve_enabled
     _auto_approve_enabled = enabled
+
+
+def set_autonomy_policy(policy: AutonomyPolicy | None) -> None:
+    """Set the active seller autonomy policy. None disables Tier-1 auto-execute."""
+    global _autonomy_policy
+    _autonomy_policy = policy
 
 
 def set_approval_callback(callback: Callable[[str, str], ApprovalResult]) -> None:
@@ -89,6 +103,10 @@ def send_for_approval(
     draft_body: str,
     sources: list[str] | None = None,
     agent_name: str = "Messaging",
+    *,
+    intent: str | None = None,
+    grounded: bool | None = None,
+    margin_safe: bool | None = None,
 ) -> dict[str, Any]:
     """Submit a draft message for human approval before sending.
 
@@ -122,6 +140,25 @@ def send_for_approval(
     # Timestamp for human readability + a short random suffix so two drafts
     # composed in the same second can never collide on the same id.
     draft_id = f"draft_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}"
+
+    # Graduated autonomy: a low-risk, policy-allowed, structurally-safe decision
+    # executes at Tier 1 WITHOUT per-action approval (this overrides the human
+    # gate for exactly the class the seller opted in to). Everything else — and
+    # everything when no policy is set — holds, preserving the fail-closed gate.
+    resolved_intent = intent or autonomy.classify_intent(draft_body, sources, agent_name)
+    grounded_signal = grounded if grounded is not None else bool(sources)
+    tier = autonomy.decide_tier(
+        _autonomy_policy, resolved_intent, grounded=grounded_signal, margin_safe=margin_safe
+    )
+    autonomy.record_decision(tier)
+    if tier is AutonomyTier.AUTO:
+        return ApprovalResult(
+            status=ApprovalStatus.APPROVED,
+            draft_id=draft_id,
+            body=draft_body,
+            approved_at=datetime.now(UTC),
+            approved_by=f"tier1_autonomy:{resolved_intent}",
+        ).model_dump()
 
     if _approval_callback is not None:
         result = _approval_callback(draft_id, draft_body)
