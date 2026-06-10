@@ -19,6 +19,7 @@ from asili_agents.agents.operations_manager import create_operations_manager
 from asili_agents.config import get_settings
 from asili_agents.data.models import Policy, Product, Seller
 from asili_agents.data.repository import CatalogRepository, set_catalog_repository
+from asili_agents.tools import cost
 from asili_agents.tools.catalog import set_product_store
 from asili_agents.tools.logging import clear_decision_log, get_decision_log
 from asili_agents.tools.pricing import set_pricing_context
@@ -167,6 +168,16 @@ def _ingest_event(
 ) -> str | None:
     """Record an event's raw form + tool-call steps; return draft text if final."""
     raw_events.append(_event_to_dict(event))
+
+    # Best-effort cost metering: when the model returns usage metadata, price the
+    # real tokens against the tier the authoring agent runs on. Fully guarded so a
+    # missing/renamed attribute (ADK version drift) can never break a run.
+    usage = getattr(event, "usage_metadata", None)
+    if usage is not None:
+        inp = getattr(usage, "prompt_token_count", 0) or 0
+        out = getattr(usage, "candidates_token_count", 0) or 0
+        if inp or out:
+            cost.record_call(cost.tier_for_agent(event.author), int(inp), int(out))
 
     tool_calls = event.get_function_calls()
     if tool_calls:

@@ -93,7 +93,7 @@ def create_messaging_agent(
 
     return LlmAgent(
         name="messaging_agent",
-        model=settings.gemini_model,
+        model=settings.gemini_model_routine,
         description=(
             "Handles customer conversations with catalog-grounded responses. "
             "Use this agent to answer product questions, check availability, "

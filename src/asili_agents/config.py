@@ -38,10 +38,21 @@ class Settings(BaseSettings):
         description="Path to GCP service account JSON file",
     )
 
-    # Vertex AI
+    # Vertex AI — model tiering. Routine, high-volume turns (customer replies,
+    # tool selection, pricing reasoning) run on the cheaper/faster tier; complex
+    # composition + orchestration run on the larger tier. Routing most volume to
+    # the cheap tier bends the cost-per-message curve down as a seller scales.
     gemini_model: str = Field(
         default="gemini-2.5-flash",
-        description="Gemini model to use for agents (Vertex AI serves the 2.5 series)",
+        description="Default Gemini model (the complex tier; also the baseline/control model).",
+    )
+    gemini_model_routine: str = Field(
+        default="gemini-2.5-flash-lite",
+        description="Cheaper/faster model for routine, high-volume turns (Messaging, Pricing agents).",
+    )
+    gemini_model_complex: str = Field(
+        default="gemini-2.5-flash",
+        description="Larger model for complex composition/orchestration (Operations Manager).",
     )
 
     # MongoDB (system of record + MCP grounding)

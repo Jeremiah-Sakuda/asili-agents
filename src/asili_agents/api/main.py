@@ -47,6 +47,7 @@ from asili_agents.runner import (
     run_agent_async,
     run_baseline_async,
 )
+from asili_agents.tools import autonomy, cost
 from asili_agents.tools.catalog import check_stock, get_costs, set_product_store
 from asili_agents.tools.channel import ApprovalResult, ApprovalStatus, set_approval_callback
 from asili_agents.tools.logging import clear_decision_log
@@ -633,6 +634,19 @@ async def get_inbox() -> list[dict[str, Any]]:
     return items
 
 
+@app.get("/api/metrics")
+async def get_metrics() -> dict[str, Any]:
+    """Operating metrics — judge-inspectable proof of AI-native operation + unit economics.
+
+    - ``autonomy``: how many decisions the AI executed at Tier-1 without per-action
+      approval vs. held for the seller — the autonomy rate that converts "AI assists"
+      into "AI operates."
+    - ``cost``: priced model spend per seller/per call (cheaper for routine-tier
+      volume) — the substrate for the cost-per-seller curve.
+    """
+    return {"autonomy": autonomy.autonomy_stats(), "cost": cost.cost_stats()}
+
+
 @app.post("/api/reset")
 async def reset_demo() -> dict[str, str]:
     """Reset the in-memory demo state.
@@ -646,6 +660,8 @@ async def reset_demo() -> dict[str, str]:
     is safe to clear because it holds nothing durable.
     """
     clear_decision_log()
+    autonomy.reset_autonomy_stats()
+    cost.reset_cost()
     _state["last_decisions"] = []
     data_source = _state.get("data_source", "demo")
     cleared = False

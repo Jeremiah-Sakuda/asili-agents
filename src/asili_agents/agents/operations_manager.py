@@ -138,7 +138,7 @@ def create_operations_manager(
     # Create the Operations Manager with sub-agents
     return Agent(
         name="operations_manager",
-        model=settings.gemini_model,
+        model=settings.gemini_model_complex,
         description=(
             "Root orchestrator for the Asili Operations Team. "
             "Receives customer messages, routes to specialists, "

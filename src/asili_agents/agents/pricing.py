@@ -95,7 +95,7 @@ def create_pricing_agent(
 
     return LlmAgent(
         name="pricing_agent",
-        model=settings.gemini_model,
+        model=settings.gemini_model_routine,
         description=(
             "Computes margin-safe bundle prices using deterministic tools. "
             "Use this agent when a customer asks about bundles, discounts, "
