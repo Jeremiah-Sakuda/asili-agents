@@ -91,7 +91,9 @@ def cost_stats(seller_id: str | None = None) -> dict[str, float | dict[str, dict
     Without: aggregate totals + a per-seller breakdown for the cost curve.
     """
     if seller_id is not None:
-        s = _spend.get(seller_id, {"cost": 0.0, "calls": 0.0, "input_tokens": 0.0, "output_tokens": 0.0})
+        s = _spend.get(
+            seller_id, {"cost": 0.0, "calls": 0.0, "input_tokens": 0.0, "output_tokens": 0.0}
+        )
         calls = s["calls"]
         return {
             "seller_id_cost": round(s["cost"], 6),

@@ -88,7 +88,9 @@ def classify_intent(
         return "cancellation"
     if any(w in text for w in ("out of stock", "sold out", "no longer available", "out-of-stock")):
         return "out_of_stock"
-    if any(w in text for w in ("sorry", "apolog", "complaint", "disappointed", "unhappy", "refunded")):
+    if any(
+        w in text for w in ("sorry", "apolog", "complaint", "disappointed", "unhappy", "refunded")
+    ):
         return "complaint"
 
     # Low-risk informational classes.

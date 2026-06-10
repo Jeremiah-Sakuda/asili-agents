@@ -166,7 +166,11 @@ class TenantScopedStore:
 
     def _key(self, conversation_id: str) -> str:
         # Idempotent: don't double-prefix an already-scoped id.
-        return conversation_id if conversation_id.startswith(self._prefix) else f"{self._prefix}{conversation_id}"
+        return (
+            conversation_id
+            if conversation_id.startswith(self._prefix)
+            else f"{self._prefix}{conversation_id}"
+        )
 
     def _strip(self, scoped_id: str) -> str:
         return scoped_id[len(self._prefix) :] if scoped_id.startswith(self._prefix) else scoped_id

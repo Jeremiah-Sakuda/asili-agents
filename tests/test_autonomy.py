@@ -95,9 +95,7 @@ class TestChannelIntegration:
         assert autonomy.autonomy_stats()["auto"] == 0
 
     def test_tier1_auto_executes_and_meters(self):
-        channel.set_autonomy_policy(
-            AutonomyPolicy(enabled=True, auto_intents={"stock_check"})
-        )
+        channel.set_autonomy_policy(AutonomyPolicy(enabled=True, auto_intents={"stock_check"}))
         r = channel.send_for_approval(
             "Yes, 6 tins left.", sources=["Stock · 6 tins"], intent="stock_check", grounded=True
         )
@@ -113,7 +111,9 @@ class TestChannelIntegration:
             status=ApprovalStatus.PENDING, draft_id=did, body=body
         )
         channel.set_autonomy_policy(AutonomyPolicy(enabled=True, auto_intents={"stock_check"}))
-        r = channel.send_for_approval("6 tins left", sources=["Stock"], intent="stock_check", grounded=True)
+        r = channel.send_for_approval(
+            "6 tins left", sources=["Stock"], intent="stock_check", grounded=True
+        )
         assert r["status"] == "approved"
 
     def test_high_stakes_holds_even_with_policy(self):
