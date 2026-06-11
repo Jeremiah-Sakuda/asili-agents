@@ -21,8 +21,11 @@ def test_routine_is_strictly_cheaper_than_complex():
 
 
 def test_tier_for_agent_routing():
-    assert tier_for_agent("messaging_agent") is ModelTier.ROUTINE
-    assert tier_for_agent("pricing_agent") is ModelTier.ROUTINE
+    # All customer-facing agents currently run gemini-2.5-flash (the complex
+    # tier) for grounding/margin reliability, so every turn bills at the flash
+    # rate. The cheap routine tier stays priced for future high-volume routing.
+    assert tier_for_agent("messaging_agent") is ModelTier.COMPLEX
+    assert tier_for_agent("pricing_agent") is ModelTier.COMPLEX
     assert tier_for_agent("operations_manager") is ModelTier.COMPLEX
     assert tier_for_agent("baseline_agent") is ModelTier.COMPLEX
     assert tier_for_agent(None) is ModelTier.COMPLEX

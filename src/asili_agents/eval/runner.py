@@ -154,7 +154,12 @@ async def score_system_async(
 
     for scenario in scenarios:
         product = by_sku.get(scenario.target_sku)
-        raw = await reply_fn(scenario.prompt)
+        # One scenario's reply failing must never 500 the whole scorecard: treat
+        # an error as an unanswered reply (it scores as not-grounded/failed).
+        try:
+            raw = await reply_fn(scenario.prompt)
+        except Exception:  # noqa: BLE001 — keep /api/eval resilient per scenario
+            raw = None
         reply = raw.get("text") if isinstance(raw, dict) else raw
         retrieved = raw.get("retrieved") if isinstance(raw, dict) else None
         if product is None:

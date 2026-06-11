@@ -28,17 +28,22 @@ class ModelTier(str, Enum):
 
 
 # USD per 1M tokens, (input, output). Approximate Gemini 2.5 list pricing. The
-# load-bearing property is the RELATIVE ordering — routine is strictly cheaper
-# than complex — which is what makes "route routine volume to the cheap tier"
-# bend the cost-per-message curve down.
+# load-bearing property is the RELATIVE ordering — the routine (flash-lite) tier
+# is strictly cheaper than the complex (flash) tier — which is what makes routing
+# high-volume turns to the cheap tier bend the cost-per-message curve down.
 _PRICE_PER_M: dict[ModelTier, tuple[float, float]] = {
     ModelTier.ROUTINE: (0.10, 0.40),  # flash-lite class
     ModelTier.COMPLEX: (0.30, 2.50),  # flash class
 }
 
-# Agents whose turns are routine (cheap tier). The Operations Manager
-# (composition/orchestration) and the baseline run on the complex tier.
-_ROUTINE_AGENTS: frozenset[str] = frozenset({"messaging_agent", "pricing_agent"})
+# Agents whose turns are billed at the routine (cheap) tier. Currently EMPTY:
+# the customer-facing Messaging/Pricing agents run gemini-2.5-flash (the complex
+# tier) for grounding/margin reliability, so the meter prices their turns at the
+# flash rate — accurate to what actually runs. The cheaper flash-lite tier stays
+# defined and priced; add agents here (and set config.gemini_model_routine =
+# gemini-2.5-flash-lite) to route high-volume turns to it once lite-tier
+# grounding reliability is validated.
+_ROUTINE_AGENTS: frozenset[str] = frozenset()
 
 
 def estimate_cost(tier: ModelTier, input_tokens: int, output_tokens: int) -> float:
