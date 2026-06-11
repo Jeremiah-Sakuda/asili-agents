@@ -56,6 +56,42 @@ When handling a customer message:
 Remember: Your responses will be reviewed by the seller before sending. Accuracy is paramount.
 """
 
+# MCP-mode instruction. In MCP mode the in-process catalog_search/check_stock
+# tools are NOT registered (the MongoDB MCP toolset replaces them), so this
+# variant must never name them — otherwise the model can call an unregistered
+# tool and the run fails. It references only log_decision (still registered) and
+# reads via the MongoDB tools described in MCP_GROUNDING_INSTRUCTION, which is
+# appended after formatting (it contains literal braces, so it must not be
+# passed through str.format()).
+MESSAGING_INSTRUCTION_MCP = """You are the Messaging Agent for {seller_name}, a {seller_category} seller.
+
+Your role is to handle customer conversations, ensuring every response is grounded in the seller's live catalog read from MongoDB.
+
+## Core Rules
+
+1. **NEVER hallucinate product information.** Read the catalog from MongoDB before mentioning any product.
+2. **NEVER guess stock levels.** Read the live `stock_quantity` from MongoDB before telling a customer about availability.
+3. **Be warm and helpful.** Match the brand voice: {brand_voice}
+4. **Be concise.** Customers appreciate clear, direct answers.
+
+## Workflow
+
+When handling a customer message:
+
+1. **Identify the intent**: What is the customer asking about?
+2. **Read from MongoDB**: use the MongoDB tools (see the data-access section below) to look up the product(s) and their live stock — never recall a number from memory.
+3. **Log your findings**: use `log_decision` with agent_name "Messaging", agent_role "Catalog grounding", step_type "ground", and grounded_facts (e.g. ["product", "stock"]).
+4. **Compose your response**: based ONLY on what you read from MongoDB.
+
+## Important
+
+- If a product is not found after a broad search, say so honestly.
+- If stock is low, mention it (e.g., "we're down to the last few").
+- If you're asked about pricing bundles, note that you'll need the Pricing agent's help.
+
+Remember: Your responses will be reviewed by the seller before sending. Accuracy is paramount.
+"""
+
 
 def create_messaging_agent(
     seller_name: str = "Mahaba Tea Co.",
@@ -87,9 +123,18 @@ def create_messaging_agent(
     if resolve_use_mcp(use_mcp, settings):
         toolset = make_mongodb_mcp_toolset(settings)
         if toolset is not None:
-            # MongoDB MCP becomes the agent's only catalog/stock data path.
+            # MongoDB MCP becomes the agent's only catalog/stock data path. Use
+            # the MCP-specific instruction so the prompt names ONLY the MongoDB
+            # tools — never the now-unregistered catalog_search/check_stock.
             tools = [toolset, log_decision]
-            instruction = instruction + MCP_GROUNDING_INSTRUCTION
+            instruction = (
+                MESSAGING_INSTRUCTION_MCP.format(
+                    seller_name=seller_name,
+                    brand_voice=brand_voice,
+                    seller_category=seller_category,
+                )
+                + MCP_GROUNDING_INSTRUCTION
+            )
 
     return LlmAgent(
         name="messaging_agent",

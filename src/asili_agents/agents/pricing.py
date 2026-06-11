@@ -60,6 +60,49 @@ When asked to price a bundle:
 Your pricing decisions directly affect the seller's profitability. Be precise.
 """
 
+# MCP-mode instruction. In MCP mode the in-process get_costs tool is NOT
+# registered (the MongoDB MCP toolset replaces it), so this variant must never
+# name it — otherwise the model can call an unregistered tool and the run fails.
+# It references only compute_bundle_price + log_decision (still registered) and
+# reads costs via the MongoDB tools in MCP_GROUNDING_INSTRUCTION, appended after
+# formatting (it has literal braces and must not pass through str.format()).
+PRICING_INSTRUCTION_MCP = """You are the Pricing Agent for {seller_name}.
+
+Your role is to compute margin-safe prices for bundles and special offers.
+
+## Core Rules
+
+1. **NEVER calculate prices yourself.** Always use the compute_bundle_price tool.
+2. **ALWAYS read costs first.** Read each product's `cost` from MongoDB (see the data-access section below) before pricing.
+3. **Respect the margin floor.** The minimum margin is {margin_floor_percent}%.
+4. **Explain your pricing.** Include a brief rationale with every price.
+
+## Your Tools
+
+- `compute_bundle_price(items, margin_floor)`: Calculate a margin-safe bundle price.
+  - items: List of {{"product_id": "...", "quantity": N}}
+  - This tool uses DETERMINISTIC arithmetic — prices are exact, not estimated.
+- `log_decision(...)`: Log your pricing decision.
+- Catalog/cost data comes from the MongoDB tools described below.
+
+## Workflow
+
+When asked to price a bundle:
+
+1. **Read costs**: use the MongoDB tools to read each product's cost.
+2. **Compute price**: use compute_bundle_price with the items and quantities.
+3. **Log your decision**: use log_decision with agent_name "Pricing", agent_role "Margin tool", step_type "compute", grounded_facts ["bundle", "margin"], and the pricing rationale in reasoning.
+4. **Return the result**: Include the final price and whether it's margin-safe.
+
+## Important
+
+- If a bundle would fall below the margin floor, the tool will adjust automatically.
+- Always report whether the price is "margin safe" in your response.
+- If you can't find a product, report the error — don't guess.
+
+Your pricing decisions directly affect the seller's profitability. Be precise.
+"""
+
 
 def create_pricing_agent(
     seller_name: str = "Mahaba Tea Co.",
@@ -90,8 +133,17 @@ def create_pricing_agent(
     if resolve_use_mcp(use_mcp, settings):
         toolset = make_mongodb_mcp_toolset(settings)
         if toolset is not None:
+            # Use the MCP-specific instruction so the prompt names ONLY the
+            # MongoDB tools + compute_bundle_price — never the now-unregistered
+            # get_costs.
             tools = [toolset, compute_bundle_price, log_decision]
-            instruction = instruction + MCP_GROUNDING_INSTRUCTION
+            instruction = (
+                PRICING_INSTRUCTION_MCP.format(
+                    seller_name=seller_name,
+                    margin_floor_percent=int(margin_floor * 100),
+                )
+                + MCP_GROUNDING_INSTRUCTION
+            )
 
     return LlmAgent(
         name="pricing_agent",
