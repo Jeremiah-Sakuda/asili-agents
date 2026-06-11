@@ -370,22 +370,33 @@ async def run_baseline_async(
     user_id: str | None = None,
     session_id: str | None = None,
 ) -> tuple[str | None, list[dict[str, Any]]]:
-    """Execute the baseline agent on the caller's event loop (MCP-safe)."""
-    user_id, session_id = _new_ids(user_id, session_id)
-    await runner.session_service.create_session(
-        app_name=runner.app_name, user_id=user_id, session_id=session_id
-    )
-    user_message = types.Content(role="user", parts=[types.Part(text=message)])
+    """Execute the baseline agent on the caller's event loop (MCP-safe).
 
-    response_text: str | None = None
-    raw_events: list[dict[str, Any]] = []
-    async for event in runner.run_async(
-        user_id=user_id, session_id=session_id, new_message=user_message
-    ):
-        text = _extract_baseline_text(event, raw_events)
-        if text is not None:
-            response_text = text
-    return response_text, raw_events
+    Retries once and never raises: a transient model/ADK error on a single
+    scenario must not 500 the whole Trust Scorecard (`/api/eval` runs this per
+    scenario). On a hard failure it returns ``(None, events)`` so the scorer
+    records that scenario as unanswered rather than aborting the endpoint.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        uid, sid = _new_ids(user_id, session_id if attempt == 0 else None)
+        await runner.session_service.create_session(
+            app_name=runner.app_name, user_id=uid, session_id=sid
+        )
+        user_message = types.Content(role="user", parts=[types.Part(text=message)])
+        response_text: str | None = None
+        raw_events: list[dict[str, Any]] = []
+        try:
+            async for event in runner.run_async(
+                user_id=uid, session_id=sid, new_message=user_message
+            ):
+                text = _extract_baseline_text(event, raw_events)
+                if text is not None:
+                    response_text = text
+            return response_text, raw_events
+        except Exception as e:  # noqa: BLE001 — one scenario must not sink /api/eval
+            last_exc = e
+    return None, [{"error": str(last_exc)}] if last_exc else []
 
 
 def _event_to_dict(event: Event) -> dict[str, Any]:

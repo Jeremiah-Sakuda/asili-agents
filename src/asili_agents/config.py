@@ -47,8 +47,14 @@ class Settings(BaseSettings):
         description="Default Gemini model (the complex tier; also the baseline/control model).",
     )
     gemini_model_routine: str = Field(
-        default="gemini-2.5-flash-lite",
-        description="Cheaper/faster model for routine, high-volume turns (Messaging, Pricing agents).",
+        default="gemini-2.5-flash",
+        description=(
+            "Model for routine, high-volume turns (Messaging, Pricing agents). "
+            "Defaults to the reliable gemini-2.5-flash for grounding/margin "
+            "accuracy on the customer-facing path; set to gemini-2.5-flash-lite "
+            "to opt into the cheaper high-volume tier once lite-tier grounding "
+            "reliability is validated. The cost meter prices whichever model runs."
+        ),
     )
     gemini_model_complex: str = Field(
         default="gemini-2.5-flash",
