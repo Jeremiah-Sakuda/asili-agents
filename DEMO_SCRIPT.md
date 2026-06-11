@@ -47,7 +47,7 @@ A shot-by-shot script for the submission video. The structure leads with the **s
 
 ### 2:18–2:48 · Beat 4 — Deterministic pricing + who it's for
 - **Action:** Show a bundle reply (e.g. "2 tins for ~$34") with the margin-safe note; briefly show `tools/pricing.py` or the bundle card.
-- **VO:** "When a customer asks for a bundle, the price comes from plain Python with exact decimal math and a 45% margin floor — never the model. So Amina, importing Kenyan tea between shifts, gets an answer that's true and a price that doesn't lose her money. It costs her less than a single avoided chargeback."
+- **VO:** "When a customer asks for a bundle, the price comes from plain Python with exact decimal math and a 45% margin floor — never the model. So Amina, importing Kenyan tea between shifts, gets an answer that's true and a price that doesn't lose her money — for a fraction of the part-time assistant she can't yet afford to hire."
 
 ### 2:48–3:00 · Close
 - **On screen:** tagline + URL: *"Asili — the AI ops team that measures its own honesty. asili-agents…run.app/app/"*
@@ -85,7 +85,7 @@ PY
 
 ## Run-through verification
 
-Each beat is backed by a live endpoint, verified against the deployed service (revision `00027`) earlier today:
+Each beat is backed by a live endpoint, verified against the deployed service (revision `00031`+):
 
 | Beat | Backing call | Verified |
 | --- | --- | --- |

@@ -192,3 +192,44 @@ class TestAgentExecution:
 
         # Should have events
         assert len(events) > 0
+
+
+class TestMcpModePromptNamesNoUnregisteredTools:
+    """Regression: in MCP mode the agent registers only the MongoDB toolset
+    (plus log_decision / compute_bundle_price), so its prompt must NOT name the
+    in-process tools (catalog_search / check_stock / get_costs). Naming an
+    unregistered tool lets the model reach for a phantom tool and fail the run —
+    the exact defect that intermittently 500'd the live grounded path."""
+
+    @staticmethod
+    def _lazy_toolset():
+        from asili_agents.agents.mcp_tools import make_mongodb_mcp_toolset
+        from asili_agents.config import Settings
+
+        # A connection string yields a real (lazy, not-yet-connected) McpToolset.
+        return make_mongodb_mcp_toolset(
+            Settings(mongodb_uri="mongodb://localhost:27017/asili", use_mcp=True)
+        )
+
+    def test_messaging_mcp_prompt_omits_inprocess_tools(self, monkeypatch):
+        toolset = self._lazy_toolset()
+        monkeypatch.setattr(
+            "asili_agents.agents.messaging.make_mongodb_mcp_toolset",
+            lambda settings: toolset,
+        )
+        instr = create_messaging_agent(use_mcp=True).instruction
+        assert "catalog_search" not in instr
+        assert "check_stock" not in instr
+        assert "log_decision" in instr  # still registered in MCP mode
+        assert "MongoDB" in instr  # grounded via the MCP tools
+
+    def test_pricing_mcp_prompt_omits_get_costs(self, monkeypatch):
+        toolset = self._lazy_toolset()
+        monkeypatch.setattr(
+            "asili_agents.agents.pricing.make_mongodb_mcp_toolset",
+            lambda settings: toolset,
+        )
+        instr = create_pricing_agent(use_mcp=True).instruction
+        assert "get_costs" not in instr
+        assert "compute_bundle_price" in instr  # still registered in MCP mode
+        assert "MongoDB" in instr

@@ -260,9 +260,9 @@ If a claim here isn't true in the code, that's a bug, and we'd rather fix it tha
 
 ## Business model
 
-The **seller is the customer.** Asili is a per-seller SaaS back-office: a free Starter tier to remove adoption friction, then **$29/mo Operator** (all DM channels, unlimited approved replies, the Trust Scorecard) and **$79/mo Studio** (multi-brand + team seats + audit export).
+The **seller is the customer.** Asili is a per-seller SaaS back-office: **$99/mo Operator** — all DM channels, unlimited approved replies, grounded answers, margin-safe bundle pricing, the Trust Scorecard, and the autonomy ladder, with the first 30 days free — and **$199/mo Studio** (multiple catalogs/brands, team approval seats, exportable audit history).
 
-The pitch is one number: **it costs less than a single avoided mistake.** A thin-margin importer doing ~$5k/mo GMV bleeds an estimated **~$70–90/mo** to phantom-inventory refunds and below-margin discounts — both of which Asili prevents *structurally* (read-only grounding can't invent stock; the deterministic engine can't quote below the 45% floor). So the $29 plan pays for itself on the first prevented chargeback, every month. Reached through diaspora community networks (low-CAC, referral-led), a focused 5,000-seller beachhead is **~$1.7M ARR**.
+The value is VA-anchored: Asili runs the back-office a solo founder can't afford to hire out, for **a fraction of a part-time virtual assistant.** A thin-margin importer doing ~$5k/mo GMV also bleeds an estimated **~$70–90/mo** to phantom-inventory refunds and below-margin discounts — losses Asili prevents *structurally* (read-only grounding can't invent stock; the deterministic engine can't quote below the 45% floor) — so the avoided losses alone nearly cover the plan, with the hours returned to the founder on top. Reached through diaspora community networks (low-CAC, referral-led), a focused 5,000-seller Operator beachhead is **~$5.9M ARR**.
 
 → Full pricing, bottom-up TAM/SAM, per-seller unit economics, and the (honest) validation plan: **[docs/BUSINESS.md](docs/BUSINESS.md)**. *These are a founder-built hypothesis, not traction — labeled as such on purpose.*
 

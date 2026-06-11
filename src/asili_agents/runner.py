@@ -296,25 +296,35 @@ async def run_agent_async(
     in the same loop that drives the agent. The sync runner under a worker thread
     deadlocks the MCP subprocess.
     """
-    user_id, session_id = _new_ids(user_id, session_id)
-    await runner.session_service.create_session(
-        app_name=runner.app_name, user_id=user_id, session_id=session_id
-    )
-    user_message = types.Content(role="user", parts=[types.Part(text=message)])
-
-    steps: list[AgentStep] = []
-    raw_events: list[dict[str, Any]] = []
-    draft: str | None = None
-    try:
-        async for event in runner.run_async(
-            user_id=user_id, session_id=session_id, new_message=user_message
-        ):
-            d = _ingest_event(event, steps, raw_events)
-            if d is not None:
-                draft = d
-        return _finalize_run(steps, draft, raw_events)
-    except Exception as e:
-        return _error_result(steps, raw_events, e)
+    last_exc: Exception | None = None
+    # Retry once. An unregistered/phantom tool call (the model reaching for a
+    # tool the prompt named but that isn't registered) or a transient MCP hiccup
+    # is non-deterministic, so a single fresh re-invocation usually recovers the
+    # run rather than surfacing a hard failure on, e.g., the live demo path.
+    for attempt in range(2):
+        uid, sid = _new_ids(user_id, session_id if attempt == 0 else None)
+        if attempt:
+            # Discard the failed attempt's partial decision log so it can't
+            # contaminate the retry's grounded facts / sources.
+            clear_decision_log()
+        await runner.session_service.create_session(
+            app_name=runner.app_name, user_id=uid, session_id=sid
+        )
+        user_message = types.Content(role="user", parts=[types.Part(text=message)])
+        steps: list[AgentStep] = []
+        raw_events: list[dict[str, Any]] = []
+        draft: str | None = None
+        try:
+            async for event in runner.run_async(
+                user_id=uid, session_id=sid, new_message=user_message
+            ):
+                d = _ingest_event(event, steps, raw_events)
+                if d is not None:
+                    draft = d
+            return _finalize_run(steps, draft, raw_events)
+        except Exception as e:
+            last_exc = e
+    return _error_result([], [], last_exc or RuntimeError("agent run failed"))
 
 
 def _extract_baseline_text(event: Event, raw_events: list[dict[str, Any]]) -> str | None:
