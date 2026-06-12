@@ -14,6 +14,7 @@ from asili_agents.agents.mcp_tools import (
 )
 from asili_agents.config import get_settings
 from asili_agents.tools.catalog import catalog_search, check_stock
+from asili_agents.tools.followups import find_quiet_threads, find_unpaid_invoices
 from asili_agents.tools.logging import log_decision
 
 MESSAGING_INSTRUCTION = """You are the Messaging Agent for {seller_name}, a {seller_category} seller.
@@ -31,6 +32,8 @@ Your role is to handle customer conversations, ensuring every response is ground
 
 - `catalog_search(query)`: Search for products. Use this before mentioning any product.
 - `check_stock(product_identifier)`: Check real stock levels. Use this before discussing availability.
+- `find_quiet_threads(quiet_after_hours)`: List open customer threads that have gone quiet. Use before drafting any follow-up.
+- `find_unpaid_invoices(grace_hours)`: List invoices sent but not paid and now overdue. Use before drafting any payment reminder.
 - `log_decision(...)`: Log your reasoning for observability.
 
 ## Workflow
@@ -47,11 +50,28 @@ When handling a customer message:
    - grounded_facts: List the fact IDs you verified (e.g., ["product", "stock"])
 5. **Compose your response**: Based ONLY on verified data.
 
+## Following up and chasing payment (your highest-value work)
+
+The sales that leak are quiet threads and unpaid invoices. When asked to follow up,
+re-engage, or chase payment:
+
+- **Follow-ups**: call `find_quiet_threads` first. Draft a short, warm re-engagement
+  for a real thread only. If the customer is still waiting on you, lead with the answer
+  or an apology for the delay; if they went quiet after your reply, gently re-open. Never
+  invent a conversation that the tool didn't return.
+- **Invoice nudges**: call `find_unpaid_invoices` first. Draft a polite reminder that
+  quotes the EXACT amount and customer the tool returned — never a guessed figure or date.
+  Keep it friendly, not threatening; offer help completing the payment.
+- Log these with step_type "ground" and grounded_facts like ["quiet_threads"] or
+  ["unpaid_invoices"]. One draft per thread/invoice.
+
 ## Important
 
 - If a product is not found, say so honestly.
 - If stock is low, mention it (e.g., "we're down to the last few").
 - If you're asked about pricing bundles, note that you'll need the Pricing agent's help.
+- If find_quiet_threads or find_unpaid_invoices returns nothing, say there's nothing to chase
+  right now — do NOT manufacture a thread or an invoice.
 
 Remember: Your responses will be reviewed by the seller before sending. Accuracy is paramount.
 """
@@ -82,6 +102,17 @@ When handling a customer message:
 2. **Read from MongoDB**: use the MongoDB tools (see the data-access section below) to look up the product(s) and their live stock — never recall a number from memory.
 3. **Log your findings**: use `log_decision` with agent_name "Messaging", agent_role "Catalog grounding", step_type "ground", and grounded_facts (e.g. ["product", "stock"]).
 4. **Compose your response**: based ONLY on what you read from MongoDB.
+
+## Following up and chasing payment (your highest-value work)
+
+The sales that leak are quiet threads and unpaid invoices. When asked to follow up,
+re-engage, or chase payment:
+
+- **Follow-ups**: call `find_quiet_threads` first; draft a short, warm re-engagement for a
+  real thread only. Never invent a conversation the tool didn't return.
+- **Invoice nudges**: call `find_unpaid_invoices` first; draft a polite reminder quoting the
+  EXACT amount and customer it returned — never a guessed figure or date.
+- If either tool returns nothing, say there's nothing to chase right now.
 
 ## Important
 
@@ -118,15 +149,25 @@ def create_messaging_agent(
         brand_voice=brand_voice,
         seller_category=seller_category,
     )
-    tools: list = [catalog_search, check_stock, log_decision]
+    # find_quiet_threads / find_unpaid_invoices stay in-process in every mode:
+    # they read the order/thread store, not the catalog, so MCP doesn't replace
+    # them (same reasoning as compute_bundle_price for the Pricing agent).
+    tools: list = [
+        catalog_search,
+        check_stock,
+        find_quiet_threads,
+        find_unpaid_invoices,
+        log_decision,
+    ]
 
     if resolve_use_mcp(use_mcp, settings):
         toolset = make_mongodb_mcp_toolset(settings)
         if toolset is not None:
             # MongoDB MCP becomes the agent's only catalog/stock data path. Use
             # the MCP-specific instruction so the prompt names ONLY the MongoDB
-            # tools — never the now-unregistered catalog_search/check_stock.
-            tools = [toolset, log_decision]
+            # tools — never the now-unregistered catalog_search/check_stock. The
+            # in-process follow-up/invoice tools remain registered.
+            tools = [toolset, find_quiet_threads, find_unpaid_invoices, log_decision]
             instruction = (
                 MESSAGING_INSTRUCTION_MCP.format(
                     seller_name=seller_name,

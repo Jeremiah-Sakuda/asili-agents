@@ -54,6 +54,23 @@ class StockLevel(str, Enum):
     OVERSTOCKED = "overstocked"
 
 
+class OrderStatus(str, Enum):
+    """Lifecycle of a DM-pipeline order.
+
+    Mirrors how a micro-seller actually closes a sale in the DMs: a price is
+    QUOTED, an invoice is sent (INVOICED), the customer pays (PAID), the seller
+    ships (FULFILLED), or it falls through (CANCELLED). The money leaks at
+    INVOICED — an invoice sent but never chased — which is what the invoice-nudge
+    behavior targets.
+    """
+
+    QUOTED = "quoted"
+    INVOICED = "invoiced"
+    PAID = "paid"
+    FULFILLED = "fulfilled"
+    CANCELLED = "cancelled"
+
+
 class Seller(BaseModel):
     """A micro-seller using Asili Operations Team."""
 
@@ -233,6 +250,84 @@ class Conversation(BaseModel):
         self.messages.append(message)
         self.updated_at = datetime.now(UTC)
         return message
+
+    @property
+    def last_message_at(self) -> datetime:
+        """Timestamp of the most recent message (or creation if none)."""
+        if not self.messages:
+            return self.created_at
+        return max((m.sent_at or m.created_at) for m in self.messages)
+
+    @property
+    def last_direction(self) -> MessageDirection | None:
+        """Direction of the most recent message, or None if empty."""
+        if not self.messages:
+            return None
+        latest = max(self.messages, key=lambda m: m.sent_at or m.created_at)
+        return latest.direction
+
+    @property
+    def is_open(self) -> bool:
+        """Whether the conversation is still live (not closed)."""
+        return self.status != ConversationStatus.CLOSED
+
+    def hours_quiet(self, now: datetime) -> float:
+        """Hours since the last message in this conversation."""
+        delta = now - self.last_message_at
+        return delta.total_seconds() / 3600.0
+
+
+class Order(BaseModel):
+    """A DM-pipeline order — the unit a follow-up or invoice nudge acts on.
+
+    Deliberately lightweight: a micro-seller's "order" is usually a quote agreed
+    in a DM, an invoice sent, and (hopefully) a payment. Amounts are Decimal so
+    nudge copy can quote an exact figure without float drift.
+    """
+
+    id: UUID = Field(default_factory=uuid4)
+    seller_id: UUID = Field(..., description="The seller this order belongs to")
+    customer_name: str = Field(..., description="Customer's display name")
+    conversation_id: UUID | None = Field(
+        default=None, description="Conversation this order came from, if any"
+    )
+    description: str = Field(default="", description="What was ordered (e.g. '2 tins Purple Tea')")
+    amount: Decimal = Field(..., description="Order total in the seller's currency")
+    status: OrderStatus = Field(default=OrderStatus.QUOTED)
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    invoiced_at: datetime | None = Field(default=None, description="When the invoice was sent")
+    due_at: datetime | None = Field(default=None, description="When payment is due")
+    paid_at: datetime | None = Field(default=None, description="When payment was received")
+
+    @computed_field
+    @property
+    def is_unpaid(self) -> bool:
+        """An invoice was sent but no payment has been recorded."""
+        return self.status == OrderStatus.INVOICED and self.paid_at is None
+
+    def is_overdue(self, now: datetime) -> bool:
+        """Whether an unpaid invoice is past its due date as of ``now``.
+
+        If no due date is set, an unpaid invoice is considered overdue once any
+        time has passed since it was invoiced (the seller still wants it chased).
+        """
+        if not self.is_unpaid:
+            return False
+        if self.due_at is not None:
+            return now >= self.due_at
+        if self.invoiced_at is not None:
+            return now > self.invoiced_at
+        return False
+
+    def hours_overdue(self, now: datetime) -> float:
+        """Hours past due (from due_at, else invoiced_at). 0 if not overdue."""
+        if not self.is_overdue(now):
+            return 0.0
+        reference = self.due_at or self.invoiced_at
+        if reference is None:
+            return 0.0
+        return (now - reference).total_seconds() / 3600.0
 
 
 class AgentDecision(BaseModel):

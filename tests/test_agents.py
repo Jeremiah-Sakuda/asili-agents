@@ -46,14 +46,16 @@ class TestAgentCreation:
         assert "channel_format_spec" in tool_names
 
     def test_create_messaging_agent(self):
-        """Messaging agent should have catalog tools."""
+        """Messaging agent should have catalog + follow-up/invoice tools."""
         agent = create_messaging_agent()
 
         assert agent.name == "messaging_agent"
         assert agent.tools is not None
-        # Should have catalog_search, check_stock, and log_decision
+        # catalog_search, check_stock, find_quiet_threads, find_unpaid_invoices, log_decision
         tool_names = [t.__name__ if hasattr(t, "__name__") else str(t) for t in agent.tools]
-        assert len(tool_names) == 3
+        assert len(tool_names) == 5
+        assert "find_quiet_threads" in tool_names
+        assert "find_unpaid_invoices" in tool_names
 
     def test_create_pricing_agent(self):
         """Pricing agent should have pricing tools."""

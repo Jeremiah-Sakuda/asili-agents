@@ -14,6 +14,7 @@ import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -32,7 +33,7 @@ from asili_agents.data.models import (
     Product,
 )
 from asili_agents.data.repository import set_catalog_repository
-from asili_agents.data.seed import get_demo_seller
+from asili_agents.data.seed import create_demo_followups, get_demo_seller
 from asili_agents.data.store import ConversationStore, InMemoryStore, MongoStore
 from asili_agents.eval.runner import build_live_reply_fns_async, run_scorecard_async
 from asili_agents.integrations.telegram import (
@@ -50,6 +51,11 @@ from asili_agents.runner import (
 from asili_agents.tools import approvals, autonomy, cost
 from asili_agents.tools.catalog import check_stock, get_costs, set_product_store
 from asili_agents.tools.channel import ApprovalResult, ApprovalStatus, set_approval_callback
+from asili_agents.tools.followups import (
+    find_quiet_threads,
+    find_unpaid_invoices,
+    set_followups_context,
+)
 from asili_agents.tools.logging import clear_decision_log
 from asili_agents.tools.pricing import compute_bundle_price, set_pricing_context
 
@@ -219,6 +225,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("Using in-process demo seed (%s) — no MongoDB, no MCP grounding.", reason)
         set_product_store(products)
         set_pricing_context(products, policy)
+
+    # Seed the follow-up / unpaid-invoice store. In-process demo data for now
+    # (quiet threads + an overdue invoice, aged relative to startup); grounding
+    # orders/threads through Atlas is the remaining write-path increment, like
+    # the decision log and eval runs.
+    demo_conversations, demo_orders = create_demo_followups(datetime.now(UTC))
+    set_followups_context(demo_conversations, demo_orders)
 
     _state["seller"] = seller
     _state["products"] = products
@@ -697,6 +710,36 @@ async def get_metrics() -> dict[str, Any]:
         "autonomy": autonomy.autonomy_stats(),
         "cost": cost.cost_stats(),
         "approvals": approvals.approval_stats(),
+    }
+
+
+@app.get("/api/followups")
+async def get_followups(quiet_after_hours: float = 24.0) -> dict[str, Any]:
+    """Open customer threads that have gone quiet — the follow-up work queue.
+
+    Deterministic detection over the order/thread store (no LLM): which real
+    threads are stale and how long they've been quiet. The Messaging Agent drafts
+    re-engagement copy from this; the seller approves it.
+    """
+    threads = find_quiet_threads(quiet_after_hours)
+    return {"count": len(threads), "quiet_after_hours": quiet_after_hours, "threads": threads}
+
+
+@app.get("/api/invoices/unpaid")
+async def get_unpaid_invoices(grace_hours: float = 0.0) -> dict[str, Any]:
+    """Invoices sent but not paid and now overdue — the payment-chase work queue.
+
+    Deterministic detection over the order store (no LLM): exact amounts and how
+    overdue, so a nudge can quote the precise figure. The Messaging Agent drafts
+    the reminder from this; the seller approves it.
+    """
+    invoices = find_unpaid_invoices(grace_hours)
+    total = sum(float(i["amount"]) for i in invoices)
+    return {
+        "count": len(invoices),
+        "grace_hours": grace_hours,
+        "total_outstanding": round(total, 2),
+        "invoices": invoices,
     }
 
 
