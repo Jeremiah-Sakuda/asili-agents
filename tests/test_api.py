@@ -25,6 +25,28 @@ class TestHealthCheck:
         assert "version" in data
 
 
+class TestFollowupEndpoints:
+    """The follow-up / unpaid-invoice work queues (seeded demo data via lifespan)."""
+
+    def test_quiet_threads_surface_demo_threads(self, client):
+        response = client.get("/api/followups")
+        assert response.status_code == 200
+        data = response.json()
+        # Two demo threads are quiet (>24h); the 1h-old control is excluded.
+        assert data["count"] == 2
+        names = [t["customer_name"] for t in data["threads"]]
+        assert "Leo T." not in names
+
+    def test_unpaid_invoices_surface_only_overdue_unpaid(self, client):
+        response = client.get("/api/invoices/unpaid")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["count"] == 1
+        assert data["invoices"][0]["customer_name"] == "Marcus B."
+        assert data["invoices"][0]["amount"] == "48.00"
+        assert data["total_outstanding"] == 48.0
+
+
 class TestSellerEndpoint:
     """Tests for the seller endpoint."""
 
