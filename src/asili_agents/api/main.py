@@ -579,6 +579,52 @@ async def create_conversation(customer_name: str = "Dana R.") -> ConversationRes
     return _conversation_to_response(conversation)
 
 
+class PasteConversationRequest(BaseModel):
+    """A Tier-0 pasted DM: the seller copies a customer message in by hand."""
+
+    text: str = Field(..., min_length=1, max_length=4000)
+    customer_name: str = Field(default="Customer", max_length=80)
+    channel: str = Field(default="Instagram DM", max_length=40)
+
+
+@app.post("/api/conversations/paste", response_model=ConversationResponse)
+async def paste_conversation(
+    request: PasteConversationRequest, http_request: Request
+) -> ConversationResponse:
+    """Tier-0 channel fallback: paste a customer DM, get a grounded draft back.
+
+    Until a channel's API path is live (Instagram is gated on Meta App Review),
+    the seller pastes the customer's message here, runs "Draft with Asili", and
+    copies the approved reply back into the app themselves. Clunky by design —
+    the human does the sending inside the platform, which keeps the seller's
+    account inside the channel's terms of service while still exercising the
+    full grounded-draft -> approval -> instrumentation loop.
+    """
+    if _rate_limited(f"paste:{_client_key(http_request)}", max_calls=30, window_s=60.0):
+        raise HTTPException(status_code=429, detail="rate limited")
+
+    seller = _state.get("seller")
+    if not seller:
+        raise HTTPException(status_code=500, detail="Demo data not initialized")
+
+    name = request.customer_name.strip() or "Customer"
+    conversation = Conversation(
+        seller_id=seller.id,
+        customer_name=name,
+        customer_initials=initials_of(name),
+        channel=request.channel.strip() or "Instagram DM",
+        status=ConversationStatus.AWAITING_REPLY,
+    )
+    conversation.add_message(
+        direction=MessageDirection.INBOUND,
+        sender_name=name,
+        body=request.text.strip()[:MAX_INBOUND_CHARS],
+    )
+    _store().save_conversation(str(conversation.id), conversation)
+
+    return _conversation_to_response(conversation)
+
+
 @app.get("/api/conversations/{conversation_id}", response_model=ConversationResponse)
 async def get_conversation(conversation_id: str) -> ConversationResponse:
     """Get a conversation by ID."""

@@ -136,3 +136,41 @@ class TestApproveEndpointInstrumentation:
             assert "approvals" in body
             assert body["approvals"]["approved"] == 1
             assert str(conv.seller_id) in body["approvals"]["by_seller"]
+
+
+class TestPasteConversation:
+    """Tier-0 channel fallback: paste a DM, get a conversation to draft against."""
+
+    def test_paste_creates_conversation_with_inbound(self):
+        with TestClient(app) as client:
+            r = client.post(
+                "/api/conversations/paste",
+                json={
+                    "text": "Hi! Do you still have the shea butter in the 8oz jar?",
+                    "customer_name": "Imani",
+                },
+            )
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["customer_name"] == "Imani"
+            assert body["channel"] == "Instagram DM"
+            assert len(body["messages"]) == 1
+            assert body["messages"][0]["direction"] == "in"
+            assert "shea butter" in body["messages"][0]["body"]
+            # It lands in the inbox and is retrievable by id.
+            conv = client.get(f"/api/conversations/{body['id']}").json()
+            assert conv["customer_name"] == "Imani"
+
+    def test_paste_defaults_and_truncation(self):
+        with TestClient(app) as client:
+            r = client.post("/api/conversations/paste", json={"text": "x" * 3000})
+            assert r.status_code == 200
+            body = r.json()
+            assert body["customer_name"] == "Customer"
+            # Inbound text is capped at MAX_INBOUND_CHARS like every other channel.
+            assert len(body["messages"][0]["body"]) == main_module.MAX_INBOUND_CHARS
+
+    def test_paste_rejects_empty_text(self):
+        with TestClient(app) as client:
+            r = client.post("/api/conversations/paste", json={"text": ""})
+            assert r.status_code == 422
