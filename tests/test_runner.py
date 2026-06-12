@@ -1,7 +1,58 @@
 """Tests for runner helpers that don't require an LLM."""
 
-from asili_agents.runner import _collect_grounded_facts
+from asili_agents.config import Settings
+from asili_agents.runner import _collect_grounded_facts, _configure_api_credentials
 from asili_agents.tools.logging import clear_decision_log, log_decision
+
+
+class TestConfigureApiCredentials:
+    """The Vertex posture must be enforced in code, not just deploy YAML: when
+    google_genai_use_vertexai is on, route via Vertex and never export an API key
+    (google-genai would otherwise prefer the key and silently bypass Vertex —
+    breaking the submission's 'Gemini via Vertex AI' claim)."""
+
+    def _patch_settings(self, monkeypatch, **kwargs):
+        settings = Settings(**kwargs)
+        monkeypatch.setattr("asili_agents.runner.get_settings", lambda: settings)
+        # Own every env key the function may set, so monkeypatch's teardown
+        # restores the pre-test state even though the function mutates os.environ
+        # directly. This keeps the suite hermetic (no GOOGLE_* leakage).
+        for key in (
+            "GOOGLE_API_KEY",
+            "GOOGLE_GENAI_USE_VERTEXAI",
+            "GOOGLE_CLOUD_PROJECT",
+            "GOOGLE_CLOUD_LOCATION",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+    def test_vertex_posture_sets_env_and_omits_api_key(self, monkeypatch):
+        self._patch_settings(
+            monkeypatch,
+            google_genai_use_vertexai=True,
+            google_api_key="should-not-be-exported",
+            google_cloud_project="asili-test",
+            google_cloud_location="us-central1",
+        )
+        _configure_api_credentials()
+        import os
+
+        assert os.environ.get("GOOGLE_GENAI_USE_VERTEXAI") == "TRUE"
+        assert os.environ.get("GOOGLE_CLOUD_PROJECT") == "asili-test"
+        # The API key must NOT be exported on the Vertex path.
+        assert os.environ.get("GOOGLE_API_KEY") is None
+
+    def test_local_dev_posture_exports_api_key(self, monkeypatch):
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        self._patch_settings(
+            monkeypatch,
+            google_genai_use_vertexai=False,
+            google_api_key="local-dev-key",
+        )
+        _configure_api_credentials()
+        import os
+
+        assert os.environ.get("GOOGLE_API_KEY") == "local-dev-key"
 
 
 class TestCollectGroundedFacts:

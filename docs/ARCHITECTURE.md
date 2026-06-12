@@ -24,6 +24,7 @@ flowchart TB
             subgraph Team["Specialist sub-agents"]
                 MSG["💬 Messaging Agent\n(LlmAgent · Gemini)\ncatalog + stock lookups"]
                 PRC["🏷️ Pricing Agent\n(LlmAgent · Gemini)\ncalls the margin engine"]
+                CNT["✍️ Content Agent\n(LlmAgent · Gemini)\ncatalog-grounded, channel-fit copy"]
             end
 
             ENGINE{{"🔢 Deterministic Decimal\npricing engine — NON-LLM\ncompute_bundle_price()\n45% margin floor enforced"}}
@@ -113,7 +114,7 @@ One container (`Dockerfile`, `uvicorn asili_agents.api.main:app`, port 8080) hos
 `/api/run` drives the agent with the **async** ADK runner (`run_agent_async`) directly on FastAPI's event loop, so the MongoDB MCP server's stdio session shares that loop. (The earlier sync-runner-in-a-worker-thread approach deadlocked the MCP subprocess inside Cloud Run.)
 
 ### Operations Manager — the root Agent
-A Gemini-backed ADK `Agent` (`agents/operations_manager.py`) that coordinates but is **not** the expert. Its instruction is explicit: it does **not** invent product details or prices — it routes product questions to Messaging, routes bundle/pricing questions to Messaging (for catalog data) then Pricing, composes the specialists' findings into one on-brand reply, logs each decision via `log_decision`, and **always** finishes by calling `send_for_approval`. It carries only two tools (`log_decision`, `send_for_approval`) and two sub-agents (Messaging, Pricing).
+A Gemini-backed ADK `Agent` (`agents/operations_manager.py`) that coordinates but is **not** the expert. Its instruction is explicit: it does **not** invent product details or prices — it routes product questions to Messaging, routes bundle/pricing questions to Messaging (for catalog data) then Pricing, routes caption/listing/description requests to Content, composes the specialists' findings into one on-brand reply, logs each decision via `log_decision`, and **always** finishes by calling `send_for_approval`. It carries only two tools (`log_decision`, `send_for_approval`) and three sub-agents (Messaging, Pricing, Content). The Content Agent grounds its copy in the same catalog and respects per-channel formatting, but like the others it never sends — its drafts stop at the approval gate.
 
 ### Messaging Agent — catalog grounding
 A Gemini `LlmAgent` (`agents/messaging.py`) whose core rule is "**never** mention a product without `catalog_search`, **never** state availability without `check_stock`." Those tools resolve against the seller's catalog (via MCP → Atlas), so the Messaging agent physically cannot report stock it hasn't read. It logs a `ground` step listing the fact IDs it verified, which the UI highlights in the business-state panel.

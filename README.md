@@ -71,6 +71,7 @@ For a thin-margin importer, a confident wrong answer is not a cute bug. It is a 
 - **Operations Manager** (root `Agent`) receives the customer message, decides which specialist to involve, composes the final reply, logs each routing/composition step for the glass-box trace, and **never sends directly** — it submits a draft for approval.
 - **Messaging Agent** answers product and availability questions. It is instructed to *never* state a product detail or stock number without first reading it from the catalog. Its grounding path is MongoDB.
 - **Pricing Agent** handles every bundle and discount request by delegating the actual arithmetic to a deterministic tool — the LLM proposes *what* to price, Python decides *the number*.
+- **Content Agent** drafts captions, product descriptions, and listing copy — grounded in the same catalog (it never invents product facts) and fit to the target channel (Instagram, TikTok, Facebook, or a marketplace listing). Like the others, its drafts stop at the approval gate.
 
 ### MCP grounding — the agent's data path
 
@@ -211,7 +212,7 @@ Run the tests with `pytest`.
 ```
 asili-agents/
 ├── src/asili_agents/
-│   ├── agents/         # ADK agents: operations_manager, messaging, pricing, baseline, mcp_tools
+│   ├── agents/         # ADK agents: operations_manager, messaging, pricing, content, baseline, mcp_tools
 │   ├── tools/          # catalog (grounding), pricing (deterministic Decimal), logging, channel (approval gate)
 │   ├── data/           # pydantic models, CatalogRepository (static + MongoDB), seed data + tenants
 │   ├── eval/           # Trust Scorecard: scoring (deterministic), scenarios, runner

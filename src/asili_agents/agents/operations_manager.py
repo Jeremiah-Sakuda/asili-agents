@@ -7,6 +7,7 @@ and sends it through the approval gate before delivery.
 
 from google.adk.agents import Agent
 
+from asili_agents.agents.content import create_content_agent
 from asili_agents.agents.messaging import create_messaging_agent
 from asili_agents.agents.pricing import create_pricing_agent
 from asili_agents.config import get_settings
@@ -25,6 +26,7 @@ You are the coordinator of an AI operations team. Your role is to:
 
 - **Messaging Agent**: Handles catalog lookups and stock checks. Use for product questions.
 - **Pricing Agent**: Computes margin-safe bundle prices. Use when customers ask about bundles or discounts.
+- **Content Agent**: Drafts captions, product descriptions, and listing copy, grounded in the catalog and fit to the channel. Use when the seller asks for a caption, post, listing, or description.
 
 ## Your Tools
 
@@ -39,7 +41,8 @@ For each customer message:
 Analyze the message and decide which agents to involve.
 - Product questions → Messaging Agent
 - Bundle/pricing questions → Messaging Agent first (for catalog data), then Pricing Agent
-- Both → Use both agents in sequence
+- Caption / listing / description / post requests → Content Agent
+- Multiple needs → use the relevant agents in sequence
 
 Log your routing decision:
 ```
@@ -134,6 +137,12 @@ def create_operations_manager(
         margin_floor=margin_floor,
         use_mcp=use_mcp,
     )
+    content_agent = create_content_agent(
+        seller_name=seller_name,
+        brand_voice=brand_voice,
+        use_mcp=use_mcp,
+        seller_category=seller_category,
+    )
 
     # Create the Operations Manager with sub-agents
     return Agent(
@@ -157,5 +166,6 @@ def create_operations_manager(
         sub_agents=[
             messaging_agent,
             pricing_agent,
+            content_agent,
         ],
     )
