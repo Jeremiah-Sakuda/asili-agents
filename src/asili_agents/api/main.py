@@ -47,7 +47,7 @@ from asili_agents.runner import (
     run_agent_async,
     run_baseline_async,
 )
-from asili_agents.tools import autonomy, cost
+from asili_agents.tools import approvals, autonomy, cost
 from asili_agents.tools.catalog import check_stock, get_costs, set_product_store
 from asili_agents.tools.channel import ApprovalResult, ApprovalStatus, set_approval_callback
 from asili_agents.tools.logging import clear_decision_log
@@ -643,8 +643,15 @@ async def get_metrics() -> dict[str, Any]:
       into "AI operates."
     - ``cost``: priced model spend per seller/per call (cheaper for routine-tier
       volume) — the substrate for the cost-per-seller curve.
+    - ``approvals``: per-seller ladder metrics — approval rate, unedited rate,
+      edit distance, time-to-send — the learning-system evidence that autonomy
+      is being earned (drafts approved verbatim → intents promoted to Tier-1).
     """
-    return {"autonomy": autonomy.autonomy_stats(), "cost": cost.cost_stats()}
+    return {
+        "autonomy": autonomy.autonomy_stats(),
+        "cost": cost.cost_stats(),
+        "approvals": approvals.approval_stats(),
+    }
 
 
 @app.post("/api/reset")
@@ -662,6 +669,7 @@ async def reset_demo() -> dict[str, str]:
     clear_decision_log()
     autonomy.reset_autonomy_stats()
     cost.reset_cost()
+    approvals.reset_approval_stats()
     _state["last_decisions"] = []
     data_source = _state.get("data_source", "demo")
     cleared = False
@@ -744,6 +752,7 @@ async def run_agents(request: RunAgentsRequest, http_request: Request) -> RunAge
                 "body": result.draft,
                 "sources": result.draft_sources,
                 "status": "pending",
+                "created_at": time.time(),
             },
         )
 
@@ -852,15 +861,32 @@ async def approve_draft(request: ApprovalRequest) -> ApprovalResponse:
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
+    # Ladder instrumentation: every seller decision on a held draft is measured
+    # (approval rate, edit distance, time-to-send) — the evidence that autonomy
+    # is being earned per seller, not asserted.
+    seller_key = str(conversation.seller_id)
+    created_at = pending.get("created_at")
+    time_to_send = (time.time() - float(created_at)) if created_at else None
+
     if request.action == "reject":
+        approvals.record_outcome("reject", seller_id=seller_key)
         store.delete_pending(request.conversation_id)
         return ApprovalResponse(status="rejected", message=None)
 
     # Approve or edit
+    original_body = str(pending.get("body", ""))
     final_body = str(
-        request.edited_body
-        if request.action == "edit" and request.edited_body
-        else pending.get("body", "")
+        request.edited_body if request.action == "edit" and request.edited_body else original_body
+    )
+    approvals.record_outcome(
+        request.action,
+        edit_distance=(
+            approvals.normalized_edit_distance(original_body, final_body)
+            if request.action == "edit"
+            else None
+        ),
+        time_to_send_s=time_to_send,
+        seller_id=seller_key,
     )
 
     # Deliver over the originating channel (Telegram), if the draft came from one.
@@ -1034,6 +1060,7 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
                 "status": "pending",
                 "channel": "telegram",
                 "chat_id": inbound.chat_id,
+                "created_at": time.time(),
             },
         )
     return {"ok": True, "conversation_id": conversation_id, "pending": pending}
