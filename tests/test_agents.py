@@ -11,6 +11,7 @@ import os
 import pytest
 
 from asili_agents.agents.baseline import create_baseline_agent, generate_catalog_dump_from_products
+from asili_agents.agents.content import create_content_agent
 from asili_agents.agents.messaging import create_messaging_agent
 from asili_agents.agents.operations_manager import create_operations_manager
 from asili_agents.agents.pricing import create_pricing_agent
@@ -27,9 +28,22 @@ class TestAgentCreation:
 
         assert agent.name == "operations_manager"
         assert agent.sub_agents is not None
-        assert len(agent.sub_agents) == 2  # messaging and pricing
+        assert len(agent.sub_agents) == 3  # messaging, pricing, content
+        sub_names = {a.name for a in agent.sub_agents}
+        assert sub_names == {"messaging_agent", "pricing_agent", "content_agent"}
         assert agent.tools is not None
         assert len(agent.tools) == 2  # log_decision and send_for_approval
+
+    def test_create_content_agent(self):
+        """Content agent should have catalog + channel-spec tools."""
+        agent = create_content_agent()
+
+        assert agent.name == "content_agent"
+        assert agent.tools is not None
+        # catalog_search, channel_format_spec, log_decision
+        tool_names = [t.__name__ if hasattr(t, "__name__") else str(t) for t in agent.tools]
+        assert len(tool_names) == 3
+        assert "channel_format_spec" in tool_names
 
     def test_create_messaging_agent(self):
         """Messaging agent should have catalog tools."""
@@ -232,4 +246,16 @@ class TestMcpModePromptNamesNoUnregisteredTools:
         instr = create_pricing_agent(use_mcp=True).instruction
         assert "get_costs" not in instr
         assert "compute_bundle_price" in instr  # still registered in MCP mode
+        assert "MongoDB" in instr
+
+    def test_content_mcp_prompt_omits_catalog_search(self, monkeypatch):
+        toolset = self._lazy_toolset()
+        monkeypatch.setattr(
+            "asili_agents.agents.content.make_mongodb_mcp_toolset",
+            lambda settings: toolset,
+        )
+        instr = create_content_agent(use_mcp=True).instruction
+        assert "catalog_search" not in instr
+        assert "channel_format_spec" in instr  # still registered in MCP mode
+        assert "log_decision" in instr
         assert "MongoDB" in instr
