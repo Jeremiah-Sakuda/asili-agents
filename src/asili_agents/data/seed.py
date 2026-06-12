@@ -10,6 +10,7 @@ system's capabilities:
 4. Policies: Defined margin floor for the pricing agent
 """
 
+from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -17,6 +18,8 @@ from asili_agents.data.models import (
     Conversation,
     ConversationStatus,
     MessageDirection,
+    Order,
+    OrderStatus,
     Policy,
     Product,
     Seller,
@@ -201,6 +204,97 @@ def create_demo_conversation() -> Conversation:
     )
 
     return conversation
+
+
+def create_demo_followups(now: datetime) -> tuple[list[Conversation], list[Order]]:
+    """Demo quiet threads + unpaid invoices for the follow-up/nudge behaviors.
+
+    Timestamps are built relative to ``now`` so detection fires deterministically
+    regardless of when the demo runs. Includes negative controls (a fresh thread
+    and a paid order) that must NOT surface, proving detection is real.
+    """
+    # Quiet thread #1 — customer went silent after the seller's reply (3 days).
+    quiet_reengage = Conversation(
+        seller_id=MAHABA_TEA_ID,
+        customer_name="Priya M.",
+        customer_initials="PM",
+        channel="Instagram DM",
+        status=ConversationStatus.REPLIED,
+    )
+    # Anchor every message's sent_at to `now` — a message with no sent_at falls
+    # back to wall-clock created_at, which would wrongly dominate last_message_at.
+    inbound = quiet_reengage.add_message(
+        direction=MessageDirection.INBOUND,
+        sender_name="Priya M.",
+        body="Is the First-Flush Black back yet?",
+    )
+    inbound.sent_at = now - timedelta(days=3, hours=2)
+    msg = quiet_reengage.add_message(
+        direction=MessageDirection.OUTBOUND,
+        sender_name="Mahaba Tea Co.",
+        body="Not yet — restocking in about a week. Want me to set one aside?",
+    )
+    msg.sent_at = now - timedelta(days=3)
+    quiet_reengage.updated_at = now - timedelta(days=3)
+
+    # Quiet thread #2 — customer is still waiting on the seller (2 days).
+    quiet_waiting = Conversation(
+        seller_id=MAHABA_TEA_ID,
+        customer_name="Dana R.",
+        customer_initials="DR",
+        channel="WhatsApp",
+        status=ConversationStatus.AWAITING_REPLY,
+    )
+    waiting_msg = quiet_waiting.add_message(
+        direction=MessageDirection.INBOUND,
+        sender_name="Dana R.",
+        body="Could you do a gift wrap on the Purple Tea tin?",
+    )
+    waiting_msg.sent_at = now - timedelta(days=2)
+    quiet_waiting.updated_at = now - timedelta(days=2)
+
+    # Negative control — a fresh thread that must NOT be flagged as quiet.
+    fresh = Conversation(
+        seller_id=MAHABA_TEA_ID,
+        customer_name="Leo T.",
+        customer_initials="LT",
+        channel="Instagram DM",
+        status=ConversationStatus.ACTIVE,
+    )
+    fresh_msg = fresh.add_message(
+        direction=MessageDirection.INBOUND,
+        sender_name="Leo T.",
+        body="Do you ship to Canada?",
+    )
+    fresh_msg.sent_at = now - timedelta(hours=1)
+    fresh.updated_at = now - timedelta(hours=1)
+
+    # Unpaid invoice — sent 5 days ago, due 2 days ago, never paid.
+    unpaid = Order(
+        seller_id=MAHABA_TEA_ID,
+        customer_name="Marcus B.",
+        description="2 tins Purple Tea + sampler",
+        amount=Decimal("48.00"),
+        status=OrderStatus.INVOICED,
+        created_at=now - timedelta(days=6),
+        invoiced_at=now - timedelta(days=5),
+        due_at=now - timedelta(days=2),
+    )
+
+    # Negative control — a paid order that must NOT surface.
+    paid = Order(
+        seller_id=MAHABA_TEA_ID,
+        customer_name="Aisha K.",
+        description="1 tin First-Flush Black",
+        amount=Decimal("18.00"),
+        status=OrderStatus.PAID,
+        created_at=now - timedelta(days=4),
+        invoiced_at=now - timedelta(days=4),
+        due_at=now - timedelta(days=1),
+        paid_at=now - timedelta(days=2),
+    )
+
+    return [quiet_reengage, quiet_waiting, fresh], [unpaid, paid]
 
 
 def get_demo_seller() -> tuple[Seller, list[Product], Policy]:
