@@ -38,6 +38,21 @@ class Settings(BaseSettings):
         description="Path to GCP service account JSON file",
     )
 
+    # Routing posture. In production (Cloud Run) the deploy sets
+    # GOOGLE_GENAI_USE_VERTEXAI=true, so every Gemini call goes through Vertex AI
+    # under the service account — which is what the submission claims ("Gemini via
+    # Vertex AI"). Surfacing it here makes the claim enforced in code, not just in
+    # deploy YAML: when true, the runner routes via Vertex and does NOT also export
+    # an API key (which google-genai would otherwise prefer, silently bypassing
+    # Vertex). Local dev leaves this false and uses GOOGLE_API_KEY.
+    google_genai_use_vertexai: bool = Field(
+        default=False,
+        description=(
+            "Route all Gemini calls through Vertex AI. True in deployed/production "
+            "(set via GOOGLE_GENAI_USE_VERTEXAI=true); false for local dev with an API key."
+        ),
+    )
+
     # Vertex AI — model tiering. Routine, high-volume turns (customer replies,
     # tool selection, pricing reasoning) run on the cheaper/faster tier; complex
     # composition + orchestration run on the larger tier. Routing most volume to

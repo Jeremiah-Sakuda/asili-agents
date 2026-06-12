@@ -28,19 +28,32 @@ from asili_agents.tools.pricing import set_pricing_context
 def _configure_api_credentials() -> None:
     """Configure Google API credentials from settings.
 
-    Supports two authentication methods:
-    1. GOOGLE_API_KEY - Direct Gemini API access (simpler for local dev)
-    2. GOOGLE_APPLICATION_CREDENTIALS - GCP service account (Vertex AI)
+    Two postures, and they are mutually exclusive on purpose:
 
-    ADK will use whichever is available.
+    1. **Vertex AI (production)** — ``google_genai_use_vertexai`` is true (Cloud Run
+       sets ``GOOGLE_GENAI_USE_VERTEXAI=true``). Every Gemini call routes through
+       Vertex under the service account / ADC. We do NOT also export an API key,
+       because google-genai prefers a present ``GOOGLE_API_KEY`` and would silently
+       fall back to the Developer API — defeating the "Gemini via Vertex" posture
+       the submission claims. This is what makes that claim enforced in code.
+    2. **Gemini Developer API (local dev)** — Vertex off; use ``GOOGLE_API_KEY``.
     """
     settings = get_settings()
 
-    # Set API key if provided
+    if settings.google_genai_use_vertexai:
+        os.environ.setdefault("GOOGLE_GENAI_USE_VERTEXAI", "TRUE")
+        os.environ.setdefault("GOOGLE_CLOUD_PROJECT", settings.google_cloud_project)
+        os.environ.setdefault("GOOGLE_CLOUD_LOCATION", settings.google_cloud_location)
+        if settings.google_application_credentials and not os.environ.get(
+            "GOOGLE_APPLICATION_CREDENTIALS"
+        ):
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = settings.google_application_credentials
+        return
+
+    # Local-dev fallback: direct Gemini Developer API via key.
     if settings.google_api_key and not os.environ.get("GOOGLE_API_KEY"):
         os.environ["GOOGLE_API_KEY"] = settings.google_api_key
 
-    # Set service account credentials if provided
     if settings.google_application_credentials and not os.environ.get(
         "GOOGLE_APPLICATION_CREDENTIALS"
     ):
