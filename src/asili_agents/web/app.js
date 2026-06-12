@@ -465,6 +465,32 @@ function renderScoreboard(data) {
 }
 
 // ---------------------------------------------------------------------------
+// Tier-0 paste-a-DM (channel fallback while API paths await platform review):
+// the seller pastes a customer message from any channel, Asili drafts behind
+// the gate, and the seller copies the approved reply back into the app.
+// ---------------------------------------------------------------------------
+
+async function pasteDM() {
+  const text = window.prompt(
+    "Paste the customer's message (from Instagram, WhatsApp, anywhere). " +
+      "Asili will draft a grounded reply for your approval — you send it back yourself."
+  );
+  if (!text || !text.trim()) return;
+  const name = window.prompt("Customer's name (optional):") || "Customer";
+  try {
+    const conv = await api("/api/conversations/paste", {
+      method: "POST",
+      body: JSON.stringify({ text: text.trim(), customer_name: name.trim() || "Customer" }),
+    });
+    clearError();
+    await loadInbox(false);
+    openConversation(conv.id);
+  } catch (err) {
+    showError(`Couldn't add the pasted DM — ${err.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Wire up
 // ---------------------------------------------------------------------------
 
@@ -476,6 +502,7 @@ function init() {
   $("cancelEditBtn").addEventListener("click", cancelEdit);
   $("sendEditBtn").addEventListener("click", () => approve("edit", $("editArea").value));
   $("evalBtn").addEventListener("click", runEval);
+  $("pasteBtn").addEventListener("click", pasteDM);
   boot();
 }
 

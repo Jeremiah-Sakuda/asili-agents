@@ -1,9 +1,19 @@
 # Telegram Channel
 
-Asili can take customer messages over **Telegram** — the channel where many
-micro‑sellers actually operate — and answer them with the same grounded,
-margin‑safe, **human‑approved** replies as the web console. This document covers
-how it works, how to set it up, and the API surface.
+> **Channel positioning (honest):** Telegram is the **demo / reference
+> channel** — it proves the full live loop (inbound DM → grounded draft →
+> approval gate → delivery) end-to-end with no platform-review gate. The
+> channels the target sellers actually operate on are **Instagram and
+> WhatsApp**: Instagram's API path is gated on Meta App Review (the founding
+> cohort can run as test users in the meantime), and until then the **Tier-0
+> paste-a-DM flow** in the console (`POST /api/conversations/paste`) covers any
+> channel — the seller pastes the customer's message, approves the grounded
+> draft, and sends it back inside the platform themselves, staying inside each
+> channel's terms of service.
+
+Asili can take customer messages over **Telegram** and answer them with the
+same grounded, margin‑safe, **human‑approved** replies as the web console. This
+document covers how it works, how to set it up, and the API surface.
 
 > **The approval gate is preserved.** Unlike a typical bot that auto‑replies, an
 > inbound Telegram message here becomes a **pending draft**. The seller approves

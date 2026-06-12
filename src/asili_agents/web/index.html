@@ -56,6 +56,13 @@
           <span class="panel__tag panel__tag--live" id="inboxTag">live</span>
         </div>
         <ul class="inbox__list" id="inboxList"></ul>
+        <!-- Tier-0 channel fallback: paste a DM from any channel (e.g. Instagram
+             while the API path awaits Meta review); the seller sends the approved
+             reply back inside the app themselves. -->
+        <button class="btn btn--ghost btn--block btn--mini" id="pasteBtn"
+                title="Paste a customer DM from any channel — Asili drafts, you approve and send it back yourself">
+          ＋ Paste a customer DM
+        </button>
       </article>
 
       <!-- 2) CONVERSATION: opened from the inbox -->
