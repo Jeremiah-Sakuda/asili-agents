@@ -65,12 +65,31 @@ jobs:
           # `asili-mongodb-uri`. MCP grounding is enabled unconditionally; the
           # MCP server spawns a Node subprocess, so the service gets 2 CPU / 2Gi,
           # a long timeout, startup CPU boost, and one warm instance.
+          #
+          # CHANNEL CONNECTORS (Instagram + WhatsApp): the connector code ships
+          # safe-by-default — every Meta setting defaults to None, IG connect
+          # returns 503 until configured, webhooks fail closed, and WhatsApp is
+          # inert until WHATSAPP_BSP_LIVE=true. To go live, create these in
+          # Secret Manager, then add the following to the deploy command below:
+          #
+          #   --set-secrets "MONGODB_URI=asili-mongodb-uri:latest,\
+          #     META_APP_ID=asili-meta-app-id:latest,\
+          #     META_APP_SECRET=asili-meta-app-secret:latest,\
+          #     INSTAGRAM_WEBHOOK_VERIFY_TOKEN=asili-ig-webhook-verify-token:latest,\
+          #     TOKEN_ENCRYPTION_KEY=asili-token-encryption-key:latest,\
+          #     OAUTH_STATE_SECRET=asili-oauth-state-secret:latest"
+          #   --set-env-vars "...existing...,\
+          #     INSTAGRAM_REDIRECT_URI=https://<this-service-url>/api/instagram/oauth/callback,\
+          #     PUBLIC_APP_BASE_URL=https://tryasili.com,WHATSAPP_BSP_LIVE=true"
+          #
+          # The line below stays MongoDB-only so a deploy never fails on a
+          # not-yet-created channel secret.
           gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
             --platform managed \
             --region ${{ env.REGION }} \
             --allow-unauthenticated \
-            --set-env-vars "GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},GOOGLE_CLOUD_LOCATION=${{ env.REGION }},GOOGLE_GENAI_USE_VERTEXAI=true,MONGODB_DATABASE=asili,USE_MCP=true,MCP_READ_ONLY=true,DEMO_MODE=false" \
+            --set-env-vars "GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},GOOGLE_CLOUD_LOCATION=${{ env.REGION }},GOOGLE_GENAI_USE_VERTEXAI=true,MONGODB_DATABASE=asili,USE_MCP=true,MCP_READ_ONLY=true,DEMO_MODE=false,WHATSAPP_BSP_LIVE=false" \
             --set-secrets "MONGODB_URI=asili-mongodb-uri:latest" \
             --memory 2Gi --cpu 2 --timeout 600 --cpu-boost --min-instances 1 --max-instances 5
 
