@@ -8,9 +8,12 @@ webhook back to the owning seller. One connection per (seller_id, platform).
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Protocol, runtime_checkable
 
 from asili_agents.data.models import ChannelConnection
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -63,7 +66,12 @@ class MongoChannelStore:
         self._client.admin.command("ping")
         self._col = self._client[database][collection]
         # Route inbound webhooks to the owning seller by (platform, account).
-        self._col.create_index([("platform", 1), ("external_account_id", 1)])
+        # create_index is idempotent, but several Cloud Run instances can race to
+        # build it on a cold start; tolerate that instead of crashing init.
+        try:
+            self._col.create_index([("platform", 1), ("external_account_id", 1)])
+        except Exception:  # noqa: BLE001 — index is a best-effort optimization
+            logger.warning("channel_connections index creation skipped", exc_info=True)
 
     @staticmethod
     def _id(seller_id: str, platform: str) -> str:

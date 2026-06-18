@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import logging
+import secrets
 import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -1034,19 +1035,26 @@ async def approve_draft(request: ApprovalRequest) -> ApprovalResponse:
             send_seller_id = str(pending.get("seller_id") or seller_key)
             access_token = _resolve_send_token(send_seller_id, str(platform))
             if access_token:
+                send_kwargs: dict[str, Any] = {
+                    "access_token": access_token,
+                    "recipient_id": str(recipient_id),
+                    "text": final_body,
+                }
+                # WhatsApp can only send free-form inside the 24h service window;
+                # give the connector the last inbound time so it can enforce that.
+                if platform == "whatsapp":
+                    send_kwargs["last_inbound_at"] = _last_inbound_at(conversation)
                 try:
-                    outcome = await connector.send(
-                        access_token=access_token,
-                        recipient_id=str(recipient_id),
-                        text=final_body,
-                    )
+                    outcome = await connector.send(**send_kwargs)
                     if not outcome.success:
                         logger.warning("%s delivery failed: %s", platform, outcome.error)
                 except Exception:
                     logger.exception("%s delivery raised for %s", platform, recipient_id)
             else:
                 logger.warning(
-                    "No send credential for seller=%s platform=%s — not delivered",
+                    "No send credential for seller=%s platform=%s "
+                    "(no stored connection token, or TOKEN_ENCRYPTION_KEY unset) "
+                    "— not delivered",
                     seller_key,
                     platform,
                 )
@@ -1232,6 +1240,11 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
 DEFAULT_SELLER_ID = "demo"  # single-tenant fallback for legacy/demo callers
 SELLER_HEADER = "x-asili-seller-id"  # set by the web ops proxy from the auth'd user
 
+# Platforms whose inbound carries a unique per-seller account id, so a webhook
+# can be routed to the owning seller via find_by_account. Telegram (one shared
+# bot) is deliberately NOT here — it stays on its own single-tenant webhook.
+MULTI_TENANT_PLATFORMS = frozenset({"instagram", "whatsapp"})
+
 # String message-id idempotency for Meta webhooks (Telegram uses int update_id).
 _seen_message_ids: OrderedDict[str, None] = OrderedDict()
 
@@ -1262,6 +1275,16 @@ def _channel_store() -> ChannelConnectionStore | None:
     return _state.get("channel_store")
 
 
+def _last_inbound_at(conversation: Conversation) -> datetime | None:
+    """Timestamp of the most recent inbound message (for the WhatsApp 24h window)."""
+    times = [
+        (m.sent_at or m.created_at)
+        for m in conversation.messages
+        if m.direction == MessageDirection.INBOUND
+    ]
+    return max(times) if times else None
+
+
 def _resolve_send_token(seller_id: str, platform: str) -> str | None:
     """Token used to deliver on a channel.
 
@@ -1287,21 +1310,29 @@ def _resolve_send_token(seller_id: str, platform: str) -> str | None:
 # OAuth state binds a connect flow to a seller and is HMAC-signed so it can't be
 # forged by whoever lands on the callback. Format: base64url("seller|nonce|sig").
 def _sign_oauth_state(seller_id: str) -> str:
-    secret = (get_settings().oauth_state_secret or "").encode()
-    nonce = str(time.monotonic_ns())
+    secret = get_settings().oauth_state_secret
+    if not secret:
+        # Fail closed: signing with an empty key would make every state forgeable.
+        # The OAuth-start endpoint guards on this too, so this is defense in depth.
+        raise RuntimeError("OAUTH_STATE_SECRET is not configured")
+    nonce = secrets.token_urlsafe(16)  # CSPRNG; never a predictable counter
     payload = f"{seller_id}|{nonce}"
-    sig = hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()[:32]
+    sig = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()  # full 256-bit
     return base64.urlsafe_b64encode(f"{payload}|{sig}".encode()).decode().rstrip("=")
 
 
 def _verify_oauth_state(state: str) -> str | None:
+    secret = get_settings().oauth_state_secret
+    if not secret:
+        return None  # fail closed: no secret -> no valid state can exist
     try:
         raw = base64.urlsafe_b64decode(state + "===").decode()
         seller_id, nonce, sig = raw.rsplit("|", 2)
     except Exception:
         return None
-    secret = (get_settings().oauth_state_secret or "").encode()
-    expected = hmac.new(secret, f"{seller_id}|{nonce}".encode(), hashlib.sha256).hexdigest()[:32]
+    expected = hmac.new(
+        secret.encode(), f"{seller_id}|{nonce}".encode(), hashlib.sha256
+    ).hexdigest()
     return seller_id if hmac.compare_digest(sig, expected) else None
 
 
@@ -1318,7 +1349,16 @@ async def _handle_channel_inbound(platform: str, request: Request) -> dict[str, 
     """Shared inbound webhook: verify signature, route each DM to the owning
     seller by the receiving account, normalize into a per-seller Conversation,
     run the agents, and hold the drafted reply at the approval gate. Never sends.
+
+    Only platforms whose inbound carries a per-seller account id (Instagram's
+    business id, WhatsApp's phone-number id) may use this account-routed path.
+    Telegram is intentionally excluded: it is a single shared bot, so every
+    inbound would carry the same account sentinel and ``find_by_account`` could
+    not tell sellers apart. Telegram is served only by its own single-tenant
+    /api/telegram/webhook and is never resolved here.
     """
+    if platform not in MULTI_TENANT_PLATFORMS:
+        raise HTTPException(status_code=404, detail="channel not account-routable")
     registry = _state.get("channels") or {}
     connector = registry.get(platform)
     if connector is None:
@@ -1437,7 +1477,11 @@ async def instagram_oauth_start(request: Request) -> RedirectResponse:
     authorize screen with a signed state that binds this flow to their seller_id.
     """
     settings = get_settings()
-    if not (settings.meta_app_id and settings.instagram_redirect_uri):
+    if not (
+        settings.meta_app_id and settings.instagram_redirect_uri and settings.oauth_state_secret
+    ):
+        # oauth_state_secret is required: without it we can't sign a forgery-proof
+        # state, so we refuse to start the flow rather than emit a weak one.
         raise HTTPException(status_code=503, detail="Instagram connect not configured")
     seller_id = _seller_from_request(request)
     params = {
@@ -1493,7 +1537,9 @@ async def instagram_oauth_callback(
         access_token = tok.get("access_token")
         ig_account_id = str(tok.get("user_id")) if tok.get("user_id") is not None else None
     except Exception:
-        logger.exception("Instagram OAuth exchange failed")
+        # logger.error (not .exception): keep the secrets-handling exchange off
+        # the traceback path so a code/secret can't ride along into the logs.
+        logger.error("Instagram OAuth exchange failed")
         return _back("error")
 
     if not access_token or not ig_account_id:

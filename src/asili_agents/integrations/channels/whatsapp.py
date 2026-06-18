@@ -14,7 +14,7 @@ and prior opt-in (not yet implemented — flagged for the BSP wave).
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -81,12 +81,30 @@ class WhatsAppChannel:
                     )
         return out
 
-    async def send(self, *, access_token: str, recipient_id: str, text: str) -> SendOutcome:
+    async def send(
+        self,
+        *,
+        access_token: str,
+        recipient_id: str,
+        text: str,
+        last_inbound_at: datetime | None = None,
+    ) -> SendOutcome:
         # Inert until a BSP is wired: do not pretend to deliver.
         if not self._live:
             return SendOutcome(
                 success=False,
                 error="WhatsApp BSP not configured (connector built, live integration pending)",
+            )
+        # Free-form replies are allowed only inside the 24h service window. Outside
+        # it, WhatsApp requires a pre-approved template + prior opt-in (BSP wave).
+        # When the caller supplies the last inbound time we fast-fail locally
+        # instead of paying a round-trip the Cloud API would reject anyway.
+        if last_inbound_at is not None and not within_service_window(
+            last_inbound_at, datetime.now(UTC)
+        ):
+            return SendOutcome(
+                success=False,
+                error="outside the 24h service window; an approved template + opt-in are required",
             )
         # recipient_id encodes "phone_number_id:to_wa_id" so a single signature
         # serves every channel; WhatsApp needs the sender's own number id.

@@ -105,7 +105,9 @@ class FakeChannel:
     def parse_inbound(self, payload: dict) -> list[NormalizedInbound]:
         return list(self._inbounds)
 
-    async def send(self, *, access_token: str, recipient_id: str, text: str) -> SendOutcome:
+    async def send(
+        self, *, access_token: str, recipient_id: str, text: str, **_kwargs
+    ) -> SendOutcome:
         self.sends.append((access_token, recipient_id, text))
         return SendOutcome(success=True, message_id="m_out")
 
@@ -350,6 +352,31 @@ class TestWhatsAppConnector:
         assert call["json"]["to"] == "255700000001"
         assert call["json"]["text"]["body"] == "hi"
 
+    @pytest.mark.asyncio
+    async def test_send_blocked_outside_service_window(self, monkeypatch):
+        from datetime import UTC, datetime, timedelta
+
+        FakeAsyncClient.calls = []
+        import asili_agents.integrations.channels.whatsapp as wa_mod
+
+        monkeypatch.setattr(
+            wa_mod.httpx,
+            "AsyncClient",
+            lambda **kw: FakeAsyncClient(FakeResp(200, {"messages": [{"id": "x"}]})),
+        )
+        wa = WhatsAppChannel(app_secret="s", live=True)
+        stale = datetime.now(UTC) - timedelta(hours=25)
+        outcome = await wa.send(
+            access_token="TOK",
+            recipient_id="PNID:255700",
+            text="hi",
+            last_inbound_at=stale,
+        )
+        assert outcome.success is False
+        assert "service window" in (outcome.error or "")
+        # Fast-failed locally: no HTTP round-trip was attempted.
+        assert FakeAsyncClient.calls == []
+
 
 # ── Telegram connector (dev/secondary channel) ──────────────────────────────────
 
@@ -389,8 +416,28 @@ class TestOAuthState:
         )
         assert main_module._verify_oauth_state(forged) is None
 
-    def test_garbage_state_rejected(self):
+    def test_garbage_state_rejected(self, monkeypatch):
+        monkeypatch.setattr(
+            main_module.get_settings(), "oauth_state_secret", "state-secret", raising=False
+        )
         assert main_module._verify_oauth_state("totally-not-valid") is None
+
+    def test_sign_fails_closed_without_secret(self, monkeypatch):
+        # No OAUTH_STATE_SECRET configured: signing must refuse rather than emit a
+        # forgeable empty-key state.
+        monkeypatch.setattr(main_module.get_settings(), "oauth_state_secret", None, raising=False)
+        with pytest.raises(RuntimeError):
+            main_module._sign_oauth_state("seller-123")
+
+    def test_verify_fails_closed_without_secret(self, monkeypatch):
+        # Build a valid state under a real secret, then drop the secret: verify
+        # must reject (no empty-key acceptance).
+        monkeypatch.setattr(
+            main_module.get_settings(), "oauth_state_secret", "state-secret", raising=False
+        )
+        state = main_module._sign_oauth_state("seller-123")
+        monkeypatch.setattr(main_module.get_settings(), "oauth_state_secret", None, raising=False)
+        assert main_module._verify_oauth_state(state) is None
 
 
 # ── Inbound webhook: routing, isolation, outbound-only-on-approval ──────────────
@@ -468,6 +515,32 @@ class TestChannelInboundIsolation:
         monkeypatch.setitem(main_module._state, "channels", {"instagram": fake})
         r = client.post("/api/instagram/webhook", json={"object": "instagram"})
         assert r.status_code == 401
+
+    def test_telegram_excluded_from_account_routed_inbound(self):
+        # Telegram is a single shared bot, so it must NOT be resolved by
+        # find_by_account (which would route every inbound to the first seller).
+        # It stays on its own single-tenant webhook.
+        assert "telegram" not in main_module.MULTI_TENANT_PLATFORMS
+        assert {"instagram", "whatsapp"} <= set(main_module.MULTI_TENANT_PLATFORMS)
+
+    @pytest.mark.asyncio
+    async def test_handle_inbound_refuses_non_routable_platform(self):
+        from starlette.requests import Request
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "headers": [],
+            "query_string": b"",
+        }
+
+        async def receive():
+            return {"type": "http.request", "body": b"{}", "more_body": False}
+
+        with pytest.raises(Exception) as exc:
+            await main_module._handle_channel_inbound("telegram", Request(scope, receive))
+        # An HTTPException with a 4xx status (not account-routable).
+        assert getattr(exc.value, "status_code", None) == 404
 
     def test_whatsapp_inbound_encodes_send_recipient(self, client, monkeypatch):
         inb = NormalizedInbound(
