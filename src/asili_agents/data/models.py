@@ -330,6 +330,42 @@ class Order(BaseModel):
         return (now - reference).total_seconds() / 3600.0
 
 
+class ChannelStatus(str, Enum):
+    """Lifecycle of a seller's connection to a messaging channel."""
+
+    PENDING = "pending"  # OAuth/embedded-signup started, not yet usable (e.g. awaiting review)
+    CONNECTED = "connected"
+    ERROR = "error"
+    REVOKED = "revoked"
+
+
+class ChannelConnection(BaseModel):
+    """A seller's connection to one messaging channel (their own IG/WhatsApp/
+    Telegram account). The access token is stored ENCRYPTED (a TokenVault blob),
+    never in plaintext. ``external_account_id`` is the seller-side account that
+    receives inbound (IG business id, WhatsApp phone-number id, or "telegram"),
+    used to route an inbound webhook to the right seller.
+    """
+
+    seller_id: str = Field(..., description="The seller this connection belongs to")
+    platform: str = Field(..., description="instagram | whatsapp | telegram")
+    status: ChannelStatus = Field(default=ChannelStatus.PENDING)
+
+    external_account_id: str | None = Field(
+        default=None, description="Seller-side account id that receives inbound messages"
+    )
+    external_handle: str | None = Field(default=None, description="Display handle, e.g. @shop")
+
+    encrypted_token: str | None = Field(
+        default=None,
+        description="TokenVault-encrypted access token (never plaintext, never logged)",
+    )
+    token_expires_at: datetime | None = Field(default=None)
+
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class AgentDecision(BaseModel):
     """A logged decision made by an agent.
 

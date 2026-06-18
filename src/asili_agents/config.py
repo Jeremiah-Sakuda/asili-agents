@@ -136,6 +136,38 @@ class Settings(BaseSettings):
         description="Public base URL of this service, used to register the Telegram webhook.",
     )
 
+    # ── Channel connectors: Instagram + WhatsApp (Meta) ──────────────────────
+    # All per-seller OAuth/access tokens are encrypted at rest with
+    # token_encryption_key and never logged. The web app holds none of these
+    # server secrets; OAuth code-exchange happens here so the app secret stays
+    # in one place.
+    meta_app_id: str | None = Field(default=None, description="Meta App ID (Instagram Login).")
+    meta_app_secret: str | None = Field(
+        default=None, description="Meta App secret — verifies webhooks + exchanges OAuth codes."
+    )
+    instagram_redirect_uri: str | None = Field(
+        default=None, description="OAuth redirect URI registered in the Meta App dashboard."
+    )
+    instagram_webhook_verify_token: str | None = Field(
+        default=None, description="Token echoed back on the GET webhook verification handshake."
+    )
+    token_encryption_key: str | None = Field(
+        default=None,
+        description="Base64 32-byte AES-256-GCM key for encrypting per-seller channel tokens.",
+    )
+    oauth_state_secret: str | None = Field(
+        default=None,
+        description="HMAC secret used to sign the OAuth state that binds a flow to a seller_id.",
+    )
+    public_app_base_url: str | None = Field(
+        default=None,
+        description="Public base URL of the marketing/app site, for post-OAuth redirects back to onboarding.",
+    )
+    whatsapp_bsp_live: bool = Field(
+        default=False,
+        description="True once a WhatsApp BSP account + creds are wired; until then the connector is inert.",
+    )
+
     # API
     api_host: str = Field(default="0.0.0.0")
     api_port: int = Field(default=8080)

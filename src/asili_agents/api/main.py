@@ -8,8 +8,12 @@ This API provides:
 """
 
 import asyncio
+import base64
+import hashlib
 import hmac
+import json
 import logging
+import secrets
 import time
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -17,14 +21,25 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, TypeVar
+from urllib.parse import urlencode
+from uuid import NAMESPACE_URL, uuid5
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from asili_agents.config import get_settings
+from asili_agents.data.channel_store import (
+    ChannelConnectionStore,
+    InMemoryChannelStore,
+    MongoChannelStore,
+)
 from asili_agents.data.models import (
+    ChannelConnection,
+    ChannelStatus,
     Conversation,
     ConversationStatus,
     MessageDirection,
@@ -36,6 +51,9 @@ from asili_agents.data.repository import set_catalog_repository
 from asili_agents.data.seed import create_demo_followups, get_demo_seller
 from asili_agents.data.store import ConversationStore, InMemoryStore, MongoStore
 from asili_agents.eval.runner import build_live_reply_fns_async, run_scorecard_async
+from asili_agents.integrations.channels import build_channel_registry
+from asili_agents.integrations.channels.instagram import INSTAGRAM_SCOPES
+from asili_agents.integrations.secrets import TokenVault
 from asili_agents.integrations.telegram import (
     SECRET_HEADER,
     TelegramClient,
@@ -257,6 +275,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _state["last_decisions"] = []
     _rate_state.clear()
     _seen_update_ids.clear()
+    _seen_message_ids.clear()
 
     # Durable store: MongoDB when Atlas is connected (survives restarts + shared
     # across instances), else in-memory wrapping the dicts above (local/tests).
@@ -269,6 +288,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             logger.exception("MongoStore init failed — using in-memory store.")
             store = InMemoryStore(_state["conversations"], _state["pending_drafts"])
     _state["store"] = store
+
+    # Channel connectors (Instagram / WhatsApp / Telegram), the per-seller
+    # channel-connection store, and the token vault. The connectors are the ONLY
+    # outbound path and are invoked solely by /api/approve — never by an agent.
+    _state["channels"] = build_channel_registry(settings)
+    _state["token_vault"] = (
+        TokenVault(settings.token_encryption_key) if settings.token_encryption_key else None
+    )
+    channel_store: ChannelConnectionStore = InMemoryChannelStore()
+    if data_source == "atlas" and settings.mongodb_uri:
+        try:
+            channel_store = MongoChannelStore(settings.mongodb_uri, settings.mongodb_database)
+        except Exception:
+            logger.exception("MongoChannelStore init failed — using in-memory channel store.")
+            channel_store = InMemoryChannelStore()
+    _state["channel_store"] = channel_store
 
     # The agent's send_for_approval just marks the draft PENDING; the real
     # pending draft (keyed by conversation) is persisted by the endpoints via the
@@ -978,13 +1013,51 @@ async def approve_draft(request: ApprovalRequest) -> ApprovalResponse:
         seller_id=seller_key,
     )
 
-    # Deliver over the originating channel (Telegram), if the draft came from one.
+    # Deliver over the originating channel. This is the ONLY outbound path and
+    # runs solely here, after the seller's approval — no agent can reach it.
+    platform = pending.get("channel")
+    recipient_id = pending.get("recipient_id") or pending.get("chat_id")
     telegram = _state.get("telegram")
-    if pending.get("channel") == "telegram" and telegram is not None and pending.get("chat_id"):
+    if platform == "telegram" and telegram is not None and recipient_id:
+        # Dev/secondary channel: reuse the already-initialized single-bot client.
         try:
-            await telegram.send_message(pending["chat_id"], final_body)
+            await telegram.send_message(str(recipient_id), final_body)
         except Exception:
-            logger.exception("Telegram delivery failed for chat %s", pending.get("chat_id"))
+            logger.exception("Telegram delivery failed for %s", recipient_id)
+    else:
+        # Live channels (Instagram / WhatsApp) go through the connector seam with
+        # the seller's own token, resolved + decrypted only here, at send time.
+        registry = _state.get("channels") or {}
+        connector = registry.get(platform) if platform else None
+        if connector is not None and recipient_id:
+            # The channel seller_id (string) is stamped on the pending draft for
+            # multi-tenant token lookup; fall back to the conversation key.
+            send_seller_id = str(pending.get("seller_id") or seller_key)
+            access_token = _resolve_send_token(send_seller_id, str(platform))
+            if access_token:
+                send_kwargs: dict[str, Any] = {
+                    "access_token": access_token,
+                    "recipient_id": str(recipient_id),
+                    "text": final_body,
+                }
+                # WhatsApp can only send free-form inside the 24h service window;
+                # give the connector the last inbound time so it can enforce that.
+                if platform == "whatsapp":
+                    send_kwargs["last_inbound_at"] = _last_inbound_at(conversation)
+                try:
+                    outcome = await connector.send(**send_kwargs)
+                    if not outcome.success:
+                        logger.warning("%s delivery failed: %s", platform, outcome.error)
+                except Exception:
+                    logger.exception("%s delivery raised for %s", platform, recipient_id)
+            else:
+                logger.warning(
+                    "No send credential for seller=%s platform=%s "
+                    "(no stored connection token, or TOKEN_ENCRYPTION_KEY unset) "
+                    "— not delivered",
+                    seller_key,
+                    platform,
+                )
 
     # Add the message to the conversation
     message = conversation.add_message(
@@ -1153,6 +1226,384 @@ async def telegram_webhook(request: Request) -> dict[str, Any]:
             },
         )
     return {"ok": True, "conversation_id": conversation_id, "pending": pending}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Channel connectors: Instagram + WhatsApp (Meta), multi-tenant by seller_id.
+#
+# These are the live customer-message path. Inbound webhooks normalize a DM into
+# a Conversation scoped to the owning seller and hold a drafted reply at the
+# approval gate; outbound only ever happens from /api/approve. No agent has a
+# send tool and none of this changes that.
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEFAULT_SELLER_ID = "demo"  # single-tenant fallback for legacy/demo callers
+SELLER_HEADER = "x-asili-seller-id"  # set by the web ops proxy from the auth'd user
+
+# Platforms whose inbound carries a unique per-seller account id, so a webhook
+# can be routed to the owning seller via find_by_account. Telegram (one shared
+# bot) is deliberately NOT here — it stays on its own single-tenant webhook.
+MULTI_TENANT_PLATFORMS = frozenset({"instagram", "whatsapp"})
+
+# String message-id idempotency for Meta webhooks (Telegram uses int update_id).
+_seen_message_ids: OrderedDict[str, None] = OrderedDict()
+
+
+def _seen_message(message_id: str | None) -> bool:
+    """True if this message id was already processed (skip Meta retry redelivery)."""
+    if not message_id:
+        return False
+    if message_id in _seen_message_ids:
+        return True
+    _seen_message_ids[message_id] = None
+    while len(_seen_message_ids) > SEEN_UPDATE_CAP:
+        _seen_message_ids.popitem(last=False)
+    return False
+
+
+def _seller_from_request(request: Request) -> str:
+    """Acting seller from the ops-proxy header (multi-tenant); demo otherwise."""
+    return request.headers.get(SELLER_HEADER) or DEFAULT_SELLER_ID
+
+
+def _seller_uuid(seller_id: str) -> Any:
+    """Deterministic UUID for a string seller_id (Conversation.seller_id is a UUID)."""
+    return uuid5(NAMESPACE_URL, f"asili-seller:{seller_id}")
+
+
+def _channel_store() -> ChannelConnectionStore | None:
+    return _state.get("channel_store")
+
+
+def _last_inbound_at(conversation: Conversation) -> datetime | None:
+    """Timestamp of the most recent inbound message (for the WhatsApp 24h window)."""
+    times = [
+        (m.sent_at or m.created_at)
+        for m in conversation.messages
+        if m.direction == MessageDirection.INBOUND
+    ]
+    return max(times) if times else None
+
+
+def _resolve_send_token(seller_id: str, platform: str) -> str | None:
+    """Token used to deliver on a channel.
+
+    Per-seller encrypted connection token is the multi-tenant path; Telegram has
+    a single dev-bot env fallback so the dev channel works without a stored token.
+    Tokens are decrypted only here, at send time, and never logged.
+    """
+    cstore = _channel_store()
+    vault: TokenVault | None = _state.get("token_vault")
+    if cstore is not None:
+        conn = cstore.get(seller_id, platform)
+        if conn and conn.encrypted_token and vault is not None:
+            try:
+                return vault.decrypt(conn.encrypted_token)
+            except Exception:
+                logger.exception("token decrypt failed seller=%s platform=%s", seller_id, platform)
+                return None
+    if platform == "telegram":
+        return get_settings().telegram_bot_token
+    return None
+
+
+# OAuth state binds a connect flow to a seller and is HMAC-signed so it can't be
+# forged by whoever lands on the callback. Format: base64url("seller|nonce|sig").
+def _sign_oauth_state(seller_id: str) -> str:
+    secret = get_settings().oauth_state_secret
+    if not secret:
+        # Fail closed: signing with an empty key would make every state forgeable.
+        # The OAuth-start endpoint guards on this too, so this is defense in depth.
+        raise RuntimeError("OAUTH_STATE_SECRET is not configured")
+    nonce = secrets.token_urlsafe(16)  # CSPRNG; never a predictable counter
+    payload = f"{seller_id}|{nonce}"
+    sig = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()  # full 256-bit
+    return base64.urlsafe_b64encode(f"{payload}|{sig}".encode()).decode().rstrip("=")
+
+
+def _verify_oauth_state(state: str) -> str | None:
+    secret = get_settings().oauth_state_secret
+    if not secret:
+        return None  # fail closed: no secret -> no valid state can exist
+    try:
+        raw = base64.urlsafe_b64decode(state + "===").decode()
+        seller_id, nonce, sig = raw.rsplit("|", 2)
+    except Exception:
+        return None
+    expected = hmac.new(
+        secret.encode(), f"{seller_id}|{nonce}".encode(), hashlib.sha256
+    ).hexdigest()
+    return seller_id if hmac.compare_digest(sig, expected) else None
+
+
+def _meta_webhook_challenge(request: Request) -> Response:
+    """Meta GET verification handshake (shared by IG + WhatsApp webhooks)."""
+    params = request.query_params
+    token = get_settings().instagram_webhook_verify_token
+    if params.get("hub.mode") == "subscribe" and token and params.get("hub.verify_token") == token:
+        return Response(content=params.get("hub.challenge") or "", media_type="text/plain")
+    raise HTTPException(status_code=403, detail="webhook verification failed")
+
+
+async def _handle_channel_inbound(platform: str, request: Request) -> dict[str, Any]:
+    """Shared inbound webhook: verify signature, route each DM to the owning
+    seller by the receiving account, normalize into a per-seller Conversation,
+    run the agents, and hold the drafted reply at the approval gate. Never sends.
+
+    Only platforms whose inbound carries a per-seller account id (Instagram's
+    business id, WhatsApp's phone-number id) may use this account-routed path.
+    Telegram is intentionally excluded: it is a single shared bot, so every
+    inbound would carry the same account sentinel and ``find_by_account`` could
+    not tell sellers apart. Telegram is served only by its own single-tenant
+    /api/telegram/webhook and is never resolved here.
+    """
+    if platform not in MULTI_TENANT_PLATFORMS:
+        raise HTTPException(status_code=404, detail="channel not account-routable")
+    registry = _state.get("channels") or {}
+    connector = registry.get(platform)
+    if connector is None:
+        raise HTTPException(status_code=404, detail="channel not enabled")
+
+    # Read the body once and cap on the ACTUAL bytes (Content-Length is spoofable).
+    raw = await request.body()
+    if len(raw) > MAX_WEBHOOK_BYTES:
+        raise HTTPException(status_code=413, detail="payload too large")
+
+    # Verify the Meta signature on EVERY inbound call. Fail closed.
+    headers = {k.lower(): v for k, v in request.headers.items()}
+    if not connector.verify_signature(raw, headers):
+        raise HTTPException(status_code=401, detail="invalid signature")
+
+    if _rate_limited(f"{platform}:{_client_key(request)}", max_calls=120, window_s=60.0):
+        raise HTTPException(status_code=429, detail="rate limited")
+
+    try:
+        payload = json.loads(raw.decode() or "{}")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="invalid payload")
+
+    cstore = _channel_store()
+    products = _state.get("products", [])
+    policy = _state.get("policy")
+    seller_catalog = _state.get("seller")
+
+    handled = 0
+    for inb in connector.parse_inbound(payload):
+        # Route to the owning seller by the receiving account. No mapping -> ignore
+        # (we never run a billable agent for an account we don't recognize).
+        conn = cstore.find_by_account(platform, inb.recipient_account_id) if cstore else None
+        if conn is None:
+            logger.warning(
+                "inbound %s for unmapped account %s — ignored",
+                platform,
+                inb.recipient_account_id,
+            )
+            continue
+        # Idempotency: Meta redelivers on any non-2xx. Skip a message we've handled.
+        if inb.message_id and _seen_message(f"{platform}:{inb.message_id}"):
+            continue
+
+        seller_id = conn.seller_id
+        text = inb.text[:MAX_INBOUND_CHARS]
+        # Namespace the conversation key by seller so the (single-tenant) global
+        # store + approve path stay correct without leaking across tenants.
+        conversation_id = f"{seller_id}:{platform}:{inb.external_thread_id}"
+        store = _store()
+        conversation = store.get_conversation(conversation_id)
+        if conversation is None:
+            conversation = Conversation(
+                seller_id=_seller_uuid(seller_id),
+                customer_name=inb.sender_name,
+                customer_initials=initials_of(inb.sender_name),
+                channel="Instagram DM" if platform == "instagram" else "WhatsApp",
+                status=ConversationStatus.AWAITING_REPLY,
+            )
+        conversation.add_message(
+            direction=MessageDirection.INBOUND,
+            sender_name=inb.sender_name,
+            body=text,
+        )
+        store.save_conversation(conversation_id, conversation)
+
+        if not seller_catalog or not policy:
+            continue
+
+        # Ground a draft behind the approval gate (no auto-send).
+        try:
+            runner = create_runner(
+                seller_catalog,
+                products,
+                policy,
+                repository=_state.get("repository"),
+                use_mcp=_state.get("use_mcp"),
+            )
+            result = await _run_with_timeout(
+                run_agent_async(runner, text), what=f"{platform} agent run"
+            )
+        except Exception:
+            logger.exception("Agent run failed for %s thread %s", platform, inb.external_thread_id)
+            continue
+
+        if result.success and result.draft:
+            # WhatsApp send needs "phone_number_id:to"; IG sends to the customer id.
+            send_recipient = (
+                f"{inb.recipient_account_id}:{inb.external_thread_id}"
+                if platform == "whatsapp"
+                else inb.external_thread_id
+            )
+            store.set_pending(
+                conversation_id,
+                {
+                    "draft_id": f"draft_{conversation_id}",
+                    "body": result.draft,
+                    "sources": result.draft_sources,
+                    "status": "pending",
+                    "channel": platform,
+                    "recipient_id": send_recipient,
+                    "seller_id": seller_id,
+                    "created_at": time.time(),
+                },
+            )
+        handled += 1
+
+    return {"ok": True, "handled": handled}
+
+
+@app.get("/api/instagram/oauth/start")
+async def instagram_oauth_start(request: Request) -> RedirectResponse:
+    """Begin the Instagram-Login connect flow: redirect the seller to Meta's
+    authorize screen with a signed state that binds this flow to their seller_id.
+    """
+    settings = get_settings()
+    if not (
+        settings.meta_app_id and settings.instagram_redirect_uri and settings.oauth_state_secret
+    ):
+        # oauth_state_secret is required: without it we can't sign a forgery-proof
+        # state, so we refuse to start the flow rather than emit a weak one.
+        raise HTTPException(status_code=503, detail="Instagram connect not configured")
+    seller_id = _seller_from_request(request)
+    params = {
+        "client_id": settings.meta_app_id,
+        "redirect_uri": settings.instagram_redirect_uri,
+        "response_type": "code",
+        "scope": INSTAGRAM_SCOPES,
+        "state": _sign_oauth_state(seller_id),
+    }
+    return RedirectResponse("https://www.instagram.com/oauth/authorize?" + urlencode(params))
+
+
+@app.get("/api/instagram/oauth/callback")
+async def instagram_oauth_callback(
+    request: Request, code: str | None = None, state: str | None = None
+) -> RedirectResponse:
+    """Finish the connect flow: verify state, exchange the code for the seller's
+    access token (using the app secret, which lives only here), encrypt + store
+    the connection, and bounce back to the web onboarding step with a status.
+    """
+    settings = get_settings()
+    app_base = (settings.public_app_base_url or "").rstrip("/")
+
+    def _back(status: str) -> RedirectResponse:
+        return RedirectResponse(f"{app_base}/onboarding?channel=instagram&status={status}")
+
+    if not code or not state:
+        return _back("error")
+    seller_id = _verify_oauth_state(state)
+    if not seller_id:
+        return _back("error")
+    if not (settings.meta_app_id and settings.meta_app_secret and settings.instagram_redirect_uri):
+        return _back("error")
+
+    vault = _state.get("token_vault")
+    cstore = _channel_store()
+    if vault is None or cstore is None:
+        return _back("error")
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            token_resp = await client.post(
+                "https://api.instagram.com/oauth/access_token",
+                data={
+                    "client_id": settings.meta_app_id,
+                    "client_secret": settings.meta_app_secret,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": settings.instagram_redirect_uri,
+                    "code": code,
+                },
+            )
+            tok = token_resp.json() if token_resp.content else {}
+        access_token = tok.get("access_token")
+        ig_account_id = str(tok.get("user_id")) if tok.get("user_id") is not None else None
+    except Exception:
+        # logger.error (not .exception): keep the secrets-handling exchange off
+        # the traceback path so a code/secret can't ride along into the logs.
+        logger.error("Instagram OAuth exchange failed")
+        return _back("error")
+
+    if not access_token or not ig_account_id:
+        return _back("error")
+
+    now = datetime.now(UTC)
+    cstore.upsert(
+        ChannelConnection(
+            seller_id=seller_id,
+            platform="instagram",
+            status=ChannelStatus.CONNECTED,
+            external_account_id=ig_account_id,
+            encrypted_token=vault.encrypt(access_token),
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    return _back("connected")
+
+
+@app.get("/api/instagram/webhook")
+async def instagram_webhook_verify(request: Request) -> Response:
+    return _meta_webhook_challenge(request)
+
+
+@app.post("/api/instagram/webhook")
+async def instagram_webhook(request: Request) -> dict[str, Any]:
+    return await _handle_channel_inbound("instagram", request)
+
+
+@app.get("/api/whatsapp/webhook")
+async def whatsapp_webhook_verify(request: Request) -> Response:
+    return _meta_webhook_challenge(request)
+
+
+@app.post("/api/whatsapp/webhook")
+async def whatsapp_webhook(request: Request) -> dict[str, Any]:
+    return await _handle_channel_inbound("whatsapp", request)
+
+
+@app.get("/api/channels")
+async def list_channels(request: Request) -> dict[str, Any]:
+    """Per-seller channel connection status for the onboarding/dashboard UI."""
+    seller_id = _seller_from_request(request)
+    cstore = _channel_store()
+    conns = {c.platform: c for c in (cstore.list_for_seller(seller_id) if cstore else [])}
+
+    def _status(platform: str) -> dict[str, Any]:
+        c = conns.get(platform)
+        return {
+            "status": c.status.value if c else "not_connected",
+            "handle": c.external_handle if c else None,
+            "connected_at": c.created_at.isoformat() if c else None,
+        }
+
+    settings = get_settings()
+    return {
+        "seller_id": seller_id,
+        "channels": {
+            "instagram": {**_status("instagram"), "available": bool(settings.meta_app_id)},
+            "whatsapp": {**_status("whatsapp"), "available": settings.whatsapp_bsp_live},
+            "telegram": {**_status("telegram"), "available": bool(settings.telegram_bot_token)},
+        },
+    }
 
 
 @app.post("/api/eval")
